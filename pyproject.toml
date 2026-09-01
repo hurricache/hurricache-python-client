@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hurricache"
+version = "0.1.0"
+description = "HurriCache Python gRPC Client"
+requires-python = ">=3.9"
+dependencies = [
+    "grpcio>=1.60.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.60.0",
+    "pytest>=7.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["hurricache*"]

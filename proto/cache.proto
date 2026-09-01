@@ -1,0 +1,697 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.hurricache.grpc";
+option java_outer_classname = "HurriCache";
+
+package hurricache;
+
+// ============================================================================
+// Data Payloads & Compression (Low-level binary data and compression)
+// ============================================================================
+
+// Binary data of a value with an optimized buffer.
+message BinaryPayload {
+  bytes payload = 1 [ctype = CORD]; // Raw bytes of the value (uses CORD for Zero-Copy acceleration)
+  uint32 size = 2;                  // Payload size in bytes
+}
+
+// Binary data of a key.
+message KeyBinaryPayload {
+  bytes payload = 1;                // Raw bytes of the key
+  uint32 size = 2;                  // Key length
+}
+
+// Optimization hash hints for fast lookup and data locality in shards.
+message KeyHint {
+  optional uint32 week_hash = 1;    // Fast (weak) key hash for primary filtering
+  optional uint32 strong_hash = 2;  // Cryptographic/full hash for accuracy and bucket distribution
+}
+
+// Data compression metadata.
+message CompressedInfo {
+  bool enabled = 1;                 // Flag indicating whether the data is compressed
+  optional uint32 rawSize = 2;      // Uncompressed raw data size
+}
+
+// ============================================================================
+// Keys & Values (Key and value structures)
+// ============================================================================
+
+// Standard undefined/unordered key.
+message Key {
+  KeyBinaryPayload payload = 1;               // Key body
+  optional CompressedInfo compressionInfo = 2;// Key compression data
+  optional KeyHint keyHint = 3;              // Cached hashes
+  optional uint32 clientId = 4;             // Owner client ID
+}
+
+// Ordered key (used for ORDERED_SET and ORDERED_MAP).
+message OrderedKey {
+  KeyBinaryPayload payload = 1;               // Key body
+  optional uint64 order = 2;                 // Order / Weight for sorting
+  optional CompressedInfo compressionInfo = 3;// Compression data
+  optional KeyHint keyHint = 4;              // Hash hints
+  optional uint32 clientId = 5;             // Client ID
+}
+
+// Object lock information.
+message LockInfo {
+  LockType type = 1;                         // Lock retention type
+  optional uint32 lockedBy = 2;              // ID of the client holding the lock
+  optional uint64 lockedTill = 3;            // Lock expiration Unix Timestamp (in ms)
+}
+
+// Unordered scalar value.
+message Value {
+  BinaryPayload value = 1;                   // Data
+  optional CompressedInfo compressionInfo = 2;// Compression metadata
+  optional uint64 ttl = 3;                   // Absolute or relative Time-To-Live (TTL)
+  optional LockInfo lock_info = 4;           // Current lock status
+}
+
+// Ordered value (contains a weight factor).
+message OrderedValue {
+  BinaryPayload value = 1;                   // Data
+  optional uint64 order = 2;                 // Element weight (weight/order, uint64)
+  optional CompressedInfo compressionInfo = 3;// Compression
+  optional uint64 ttl = 4;                   // Time-To-Live
+  optional LockInfo lock_info = 5;           // Lock
+}
+
+// ============================================================================
+// Basic Requests & Responses (Basic requests/responses)
+// ============================================================================
+
+// Request to retrieve an object by key.
+message GetRequest {
+  Key key = 1;
+}
+message ContainerGetRequest {
+  Key key = 1;
+  Key element_key = 2;
+}
+
+// Request to modify TTL.
+message TtlRequest {
+  Key key = 1;
+  optional uint64 ttl = 2;                   // New Time-To-Live in milliseconds
+}
+
+// Response containing TTL information.
+message TtlResponse {
+  optional uint64 ttl = 1;                   // Remaining Time-To-Live
+}
+
+// Request to create a scalar Key-Value object.
+message CreateRequest {
+  Key key = 1;
+  Value value = 2;
+}
+
+// Request to update a value.
+message UpdateRequest {
+  Key key = 1;
+  Value value = 2;
+}
+message UpdateContainerRequest {
+  Key key = 1;
+  Key element_key = 2;
+  Value value = 3;
+}
+
+// Request to delete an object.
+message DeleteRequest {
+  Key key = 1;
+}
+
+// Request to check existence.
+message ExistRequest {
+  Key key = 1;
+}
+
+// Boolean response for status/success operations.
+message BoolResponse {
+  bool value = 1;                            // true - success, false - error/not found
+  optional string message = 2;               // Error or status message
+}
+
+// Response containing a numerical result (size, count).
+message IntResponse {
+  uint32 size = 1;                           // Size or element count
+}
+
+// Response containing a single value (can be either ordered or unordered).
+message ValueResponse {
+  optional Value value_unordered = 1;        // Scalar or unordered value
+  optional OrderedValue value_ordered = 2;   // Weighted value
+  optional KeyHint keyHint = 3;              // Current KeyHint
+}
+
+// Batch response containing a list of values (used during streaming).
+message BatchValueResponse {
+  repeated Key key_unordered = 1;          // Array of unordered keys
+  repeated OrderedKey key_ordered = 2;      // Array of ordered keys
+  repeated Value value_unordered = 3;        // Array of unordered values
+  repeated OrderedValue value_ordered = 4;   // Array of ordered values
+}
+
+// Response when updating a value.
+message UpdateValueResponse {
+  bool result = 1;                            // Success flag
+  optional Value value = 2;                  // Previous value
+}
+
+// Response returning the generated/calculated KeyHint.
+message KeyHintResponse {
+  KeyHint keyHint = 1;
+}
+
+// Range request by uint32 indices.
+message KeyRangeRequest {
+  Key key = 1;
+  uint32 start = 3;                          // Start index
+  uint32 end = 4;                            // End index
+}
+
+// Universal positional/range request.
+message KeyPositionRequest {
+  Key key = 1;
+  optional ContainerType type = 2;                    // Container type
+
+  // For ORDERED_SET: initial weight (target_weight / uint64).
+  // For LIST / VECTOR: initial 0-based index.
+  uint64 pos = 3;
+
+  // For ORDERED_SET: end weight of the range. If omitted, performs a point read by pos.
+  // For LIST / VECTOR: end index of the range. If omitted, returns 1 element.
+  optional uint64 end = 4;
+
+  bool reverse = 6;                          // Reverse traversal flag
+}
+
+// ============================================================================
+// Container Definitions & Requests (Containers)
+// ============================================================================
+
+// Supported data structure types (containers).
+enum ContainerType {
+  UNDEFINED = 0;
+  VECTOR = 1;        // Dynamic array (indexing, fast random access by index)
+  LIST = 2;          // Doubly-linked list (fast insert/pop at both ends)
+  QUEUE = 3;         // FIFO Queue (Push to tail, Pop from head)
+  SET = 4;           // Unordered set of unique elements
+  MAP = 5;           // Unordered hash map (Key-Value)
+  ORDERED_MAP = 6;   // Ordered map by keys/weights
+  ORDERED_SET = 7;   // Ordered set by uint64 weights (SkipList/Tree)
+}
+
+// Request to create a new container with initial items.
+message CreateContainerRequest {
+  Key key = 1;
+  ContainerType type = 2;
+  optional uint64 ttl = 3;
+  optional LockInfo lock_info = 4;
+
+  // Initial items for MAP / UNORDERED variants
+  repeated Key key_unordered = 5;            // Keys for MAP
+  repeated Value value_unordered = 6;        // Elements for LIST, VECTOR, QUEUE, SET, MAP
+
+  // Initial items for ORDERED variants
+  repeated OrderedKey key_ordered = 7;       // Keys for ORDERED_MAP
+  repeated OrderedValue value_ordered = 8;   // Weighted elements for ORDERED_SET
+}
+
+// Request to add elements to an existing container.
+message AddToRequest {
+  Key key = 1;
+  optional ContainerType type = 2;
+  optional uint64 ttl = 3;
+  optional uint32 pos = 4;                   // Insertion position (for VECTOR/LIST)
+
+  // Keys for unordered containers
+  repeated Key key_unordered = 5;
+  // Values for unordered containers
+  repeated Value value_unordered = 6;
+  // Keys for ordered containers
+  repeated OrderedKey key_ordered = 7;
+  // Values for ordered containers
+  repeated OrderedValue value_ordered = 8;
+}
+
+// Request for relative element insertion (before/after a specific value).
+message AddToValRequest {
+  Key key = 1;
+  optional uint64 ttl = 2;
+  bool isBefore = 3;                         // true = insert BEFORE value, false = AFTER
+  Value pos = 4;                             // Target value used to locate insertion position
+  repeated Value value = 5;                  // Elements to insert
+}
+
+// Request to remove elements from specialized collections.
+message RemoveFromContainerRequest {
+  Key key = 1;
+  optional ContainerType type = 2;
+  repeated Value values = 3;                 // List of values to remove from SET/ORDERED_SET, LIST, VECTOR
+  repeated Key keys = 4;                     // List of keys to remove from MAP/ORDERED_MAP
+}
+
+// ============================================================================
+// Locking Mechanisms (Lock types and statuses)
+// ============================================================================
+
+// Lock types.
+enum LockType {
+  NO_LOCK = 0;       // No lock
+  WRITE_LOCK = 1;    // Exclusive write lock
+  READ_LOCK = 2;     // Shared read lock
+  GLOBAL = 3;        // Global system/shard lock
+}
+
+// Request to acquire a lock.
+message LockRequest {
+  Key key = 1;
+  LockType lockType = 2;
+  optional uint32 clientId = 3;
+  optional uint32 lockDuration = 4;          // Lock duration in ms
+}
+
+// Request to release a lock.
+message UnLockRequest {
+  Key key = 1;
+  optional uint32 clientId = 2;
+}
+
+// Lock execution statuses.
+enum LockStatus {
+  OK = 0;
+  CANT_LOCK = 1;
+  CANT_UNLOCK = 2;
+  GENERIC_ERROR = 3;
+}
+
+// Response to a lock request.
+message LockResponse {
+  LockStatus result = 1;
+  optional string message = 2;
+}
+
+// Response to an unlock request.
+message UnlockResponse {
+  LockStatus result = 1;
+  optional string message = 2;
+}
+
+// ============================================================================
+// Atomic Operations (Atomic types and CAS)
+// ============================================================================
+
+// State of an atomic counter/value (64-bit integer).
+message AtomicValue {
+  int64 val = 1;                             // Atomic value
+  optional KeyHint keyHint = 2;
+}
+
+// Request to create/set an atomic variable.
+message AtomicCreate {
+  Key key = 1;
+  optional AtomicValue val = 2;
+  optional uint64 ttl = 3;
+  optional LockInfo lock_info = 4;
+}
+
+// Structure for Compare-And-Swap (CAS) operation.
+message AtomicCas {
+  Key key = 1;
+  AtomicValue expected = 2;                  // Expected value
+  AtomicValue toSet = 3;                     // New value to set
+  optional uint64 ttl = 4;
+  optional LockInfo lock_info = 5;
+}
+
+// Result of Compare-And-Swap operation execution.
+message AtomicCasRes {
+  bool result = 1;                           // true if exchange succeeded
+  optional AtomicValue expected = 2;         // Actual value read in case of failure
+  optional KeyHint keyHint = 3;
+}
+
+// ============================================================================
+// Replication & Internal Commands (Replication and WAL binlog)
+// ============================================================================
+
+// Command identifier for writing to the replication log (WAL).
+enum ReplicationCommandType {
+  LOCK_REQUEST = 0;
+  UNLOCK_REQUEST = 1;
+  REMOVE = 2;
+  CREATE_VALUE = 3;
+  UPDATE_VALUE = 4;
+  CREATE_CONTAINER = 6;
+  REMOVE_FRONT = 7;
+  REMOVE_TAIL = 8;
+  REMOVE_AT_POSITION = 9;
+  ADD_TO_TAIL = 10;
+  ADD_TO_FRONT = 11;
+  SET_TTL = 12;
+  ADD_TO_POSITION = 13;
+  REMOVE_FROM_POSITION = 14;
+  ATOMIC_CREATE = 15;
+  ATOMIC_STORE = 16;
+  ATOMIC_EXCHANGE = 17;
+  ATOMIC_ADD = 18;
+  ATOMIC_SUB = 19;
+  ATOMIC_OR = 20;
+  ATOMIC_AND = 21;
+  ATOMIC_XOR = 22;
+  ATOMIC_COMPARE_AND_SET = 23;
+  ADD_TO_POSITION_BY_VAL = 24;
+  REMOVE_FROM_CONTAINER = 25;
+  ADD_TO_CONTAINER = 26;
+  REMOVE_FROM_CONTAINER_BY_KEY = 27;
+  UPDATE_IN_CONTAINER_BY_KEY = 28;
+  UNKNOWN = 29;
+}
+
+// Wrapper for a single command in a replication batch.
+message BatchCommand {
+  optional LockRequest lock_request = 1;
+  optional UnLockRequest un_lock_request = 2;
+  optional TtlRequest ttl_request = 3;
+  optional UpdateRequest update_request = 4;
+  optional CreateRequest create_request = 5;
+  optional GetRequest get_request = 6;
+  optional CreateContainerRequest create_container_request = 7;
+  optional KeyPositionRequest key_position_request = 9;
+  optional KeyRangeRequest key_range_request = 10;
+  optional AddToRequest add_to_list_request = 11;
+  optional AtomicCreate atomic_request = 12;
+  optional AtomicCas atomic_cas = 13;
+  optional AddToValRequest add_to_pos_by_val = 14;
+  optional RemoveFromContainerRequest remove_from_container = 15;
+  optional ContainerGetRequest remove_from_container_by_key = 16;
+  optional UpdateContainerRequest update_in_container_by_key = 17;
+}
+
+// Atomic replication command with an explicit type.
+message BatchSingleMessage {
+  ReplicationCommandType replication_command_type = 1;
+  BatchCommand batch_command = 2;
+}
+
+// Batch of replication commands for inter-node transmission.
+message BatchMessage {
+  repeated BatchSingleMessage batch_single_messages = 1;
+}
+
+message ReplicationRequest {
+  uint64 request_id = 1; // Уникальный ID запроса для сопоставления с ответом
+
+  oneof payload {
+    BatchMessage batch_request = 2;
+    LockRequest lock_request = 3;
+    UnLockRequest unlock_request = 4;
+    TtlRequest set_ttl = 5;
+    UpdateRequest update_value = 6;
+    CreateRequest create_key_value = 7;
+    GetRequest remove_request = 8;
+
+    CreateContainerRequest create_container = 9;
+    UpdateContainerRequest update_value_in_container = 10;
+
+    GetRequest remove_tail = 11;
+    GetRequest remove_head = 12;
+    KeyPositionRequest remove_element_at_position = 13;
+    KeyRangeRequest remove_element_in_range = 14;
+    RemoveFromContainerRequest remove_from_container_by_key_value = 15;
+    ContainerGetRequest remove_in_container_by_key = 16;
+
+    AddToRequest add_element_to_tail = 17;
+    AddToRequest add_element_to_head = 18;
+    AddToRequest add_element_to_pos = 19;
+    AddToValRequest add_element_to_position_by_value = 20;
+
+    AtomicCreate atomic_create = 21;
+    AtomicCreate atomic_store = 22;
+    AtomicCreate atomic_exchange = 23;
+    AtomicCreate atomic_add = 24;
+    AtomicCreate atomic_sub = 25;
+    AtomicCreate atomic_or = 26;
+    AtomicCreate atomic_and = 27;
+    AtomicCreate atomic_xor = 28;
+    AtomicCas atomic_compare_and_set = 29;
+  }
+}
+
+message ReplicationResponse {
+  uint64 request_id = 1;      // ID запроса, на который возвращается ответ
+  BoolResponse response = 2;   // Стандартный ответ
+  string error_message = 3;    // Опциональное поле для ошибок
+}
+
+
+
+// Internal gRPC data replication service between cluster nodes.
+service DataReplicationService {
+  rpc batchMessage(BatchMessage) returns (BoolResponse) {}
+  rpc lockObject(LockRequest) returns (BoolResponse) {}
+  rpc unlockObject(UnLockRequest) returns (BoolResponse) {}
+  rpc setTtl(TtlRequest) returns (BoolResponse) {}
+  rpc updateValue(UpdateRequest) returns (BoolResponse) {}
+  rpc createKeyValue(CreateRequest) returns (BoolResponse) {}
+  rpc remove(GetRequest) returns (BoolResponse) {}
+
+  rpc createContainer(CreateContainerRequest) returns (BoolResponse) {}
+  rpc updateValueInContainer(UpdateContainerRequest) returns (BoolResponse) {}
+
+  rpc removeTail(GetRequest) returns (BoolResponse) {}
+  rpc removeHead(GetRequest) returns (BoolResponse) {}
+  rpc removeElementAtPosition(KeyPositionRequest) returns (BoolResponse) {}
+  rpc removeElementInRange(KeyRangeRequest) returns (stream BoolResponse) {}
+  rpc removeFromContainerByKeyValue(RemoveFromContainerRequest) returns (BoolResponse) {}
+  rpc removeInContainer(ContainerGetRequest) returns (BoolResponse) {}
+
+  rpc addElementToTail(AddToRequest) returns (BoolResponse) {}
+  rpc addElementToHead(AddToRequest) returns (BoolResponse) {}
+  rpc addElement(AddToRequest) returns (BoolResponse) {}
+  rpc addElementToPositionByValue(AddToValRequest) returns (BoolResponse) {}
+
+  rpc atomicCreate(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicStore(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicExchange(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicAdd(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicSub(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicOr(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicAnd(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicXor(AtomicCreate) returns (BoolResponse) {}
+  rpc atomicCompareAndSet(AtomicCas) returns (BoolResponse) {}
+
+  rpc streamReplication (stream ReplicationRequest) returns (stream ReplicationResponse) {}
+}
+
+
+// ============================================================================
+// HurriCacheGrpcService — High-performance public cache service
+// ============================================================================
+service HurriCacheGrpcService {
+
+  // --------------------------------------------------------------------------
+  // Lock Management
+  // Applicability: All object and key types
+  // --------------------------------------------------------------------------
+
+  // [ALL] Acquires an explicit lock on an object by key.
+  rpc lockObject(LockRequest) returns (LockResponse) {}
+
+  // [ALL] Releases a previously acquired lock.
+  rpc unlockObject(UnLockRequest) returns (UnlockResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // TTL Management
+  // Applicability: All object and key types
+  // --------------------------------------------------------------------------
+
+  // [ALL] Sets or updates the TTL for a key.
+  rpc setTtl(TtlRequest) returns (BoolResponse) {}
+
+  // [ALL] Returns the remaining TTL for a key.
+  rpc getTtl(GetRequest) returns (TtlResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // Key-Value Operations (Basic operations)
+  // Applicability: SCALAR VALUE
+  // --------------------------------------------------------------------------
+
+  // [VALUE] Creates a new scalar entry. Returns KeyHint.
+  rpc createKeyValue(CreateRequest) returns (KeyHintResponse) {}
+
+  // [VALUE] Returns a scalar value by key.
+  rpc getValue(GetRequest) returns (ValueResponse) {}
+
+  // [VALUE] Atomically reads the value and deletes the key (Get-and-Delete).
+  rpc getAndDeleteValue(GetRequest) returns (ValueResponse) {}
+
+  // [ALL] Checks for key existence without reading the body.
+  rpc existKey(GetRequest) returns (BoolResponse) {}
+
+  // [VALUE] Updates an existing scalar value.
+  rpc updateValue(UpdateRequest) returns (UpdateValueResponse) {}
+
+  // [ALL] Completely removes the key and associated object/container from memory.
+  rpc remove(GetRequest) returns (BoolResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // Container Management & Streaming
+  // Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+  // --------------------------------------------------------------------------
+
+  // [CONTAINERS] Initializes a new container (LIST, VECTOR, QUEUE, SET, ORDERED_SET, MAP, ORDERED_MAP).
+  rpc createContainer(CreateContainerRequest) returns (KeyHintResponse) {}
+
+  // [CONTAINERS] Streaming export of elements in batches.
+  rpc getContainer(GetRequest) returns (stream BatchValueResponse) {}
+
+  // [CONTAINERS / VALUE] Returns element count in a container or string length.
+  rpc getSize(GetRequest) returns (IntResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // Boundary Reads
+  // Applicability: LIST, VECTOR, QUEUE
+  // --------------------------------------------------------------------------
+
+  // [LIST, VECTOR, QUEUE] Returns the last element (Back / Tail).
+  rpc getTail(GetRequest) returns (ValueResponse) {}
+
+  // [LIST, VECTOR, QUEUE] Returns the first element/queue head (Front / Head / Peek).
+  rpc getHead(GetRequest) returns (ValueResponse) {}
+
+  // [MAP, ORDERED MAP]
+  rpc getValueInContainer(ContainerGetRequest) returns (ValueResponse) {}
+
+  // [MAP, ORDERED MAP]
+  // Checks for key presence inside the container.
+  rpc existKeyInContainer(ContainerGetRequest) returns (BoolResponse) {}
+
+  // --------------------------------------------------------------------------
+  // Pop Operations (Extraction with removal)
+  // Applicability: LIST, VECTOR, QUEUE, ORDERED_SET
+  // --------------------------------------------------------------------------
+
+  // [LIST, VECTOR, QUEUE] Atomically extracts and removes the first element (Pop Front / Dequeue).
+  rpc getAndRemoveFront(GetRequest) returns (ValueResponse) {}
+
+  // [LIST, VECTOR] Atomically extracts and removes the last element (Pop Back).
+  rpc getAndRemoveTail(GetRequest) returns (ValueResponse) {}
+
+  // [LIST, VECTOR, ORDERED_SET] Extracts and removes 1 element:
+  // - LIST / VECTOR: by 0-based index.
+  // - ORDERED_SET: removes all elements matching the exact uint64 weight.
+  // - ORDERED_MAP: removes all elements matching the exact uint64 weight.
+  // - QUEUE / SET: Not supported.
+  rpc getAndRemoveElementAtPosition(KeyPositionRequest) returns (ValueResponse) {}
+
+  // Map and OrderedMap
+  rpc getAndDeleteValueInContainer(ContainerGetRequest) returns (ValueResponse) {}
+  // All containers
+  rpc updateValueInContainer(UpdateContainerRequest) returns (UpdateValueResponse) {}
+
+  // --------------------------------------------------------------------------
+  // Positional & Range Reads
+  // Applicability: LIST, VECTOR, ORDERED_SET
+  // --------------------------------------------------------------------------
+
+  // Point element read:
+  // - [LIST, VECTOR]: access by 0-based index `pos`.
+  // - [ORDERED_SET]: access by exact uint64 weight in O(log N).
+  // - [QUEUE, SET, ORDERED_MAP]: NOT supported (INVALID_ARGUMENT).
+  rpc getElementAtPosition(KeyPositionRequest) returns (ValueResponse) {}
+
+  // Streaming read of element range:
+  // - [LIST, VECTOR]: selection by index range [start..end].
+  // - [ORDERED_SET]: selection by uint64 weight range [min_weight..max_weight].
+  // - [ORDERED_MAP]: selection by uint64 weight range [min_weight..max_weight].
+  // - [QUEUE, SET, MAP]: NOT supported (INVALID_ARGUMENT).
+  rpc getElementInRange(KeyPositionRequest) returns (stream BatchValueResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // Deletion Operations (Removing elements from containers)
+  // Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+  // --------------------------------------------------------------------------
+
+  // [LIST, VECTOR, QUEUE] Removes the first element without returning a value (Pop Front).
+  rpc removeHead(GetRequest) returns (BoolResponse) {}
+
+  // [LIST, VECTOR] Removes the last element without returning a value (Pop Back).
+  rpc removeTail(GetRequest) returns (BoolResponse) {}
+
+  // [LIST, VECTOR, ORDERED_SET] Removes element by index (LIST/VECTOR) or uint64 weight (ORDERED_SET).
+  rpc removeElementAtPosition(KeyPositionRequest) returns (BoolResponse) {}
+
+  // [CONTAINERS] Specialized element removal by value.
+  rpc removeFromContainerByKeyValue(RemoveFromContainerRequest) returns (IntResponse) {}
+
+  // Map, Ordered Map, Set, Ordered Set containers by key
+  rpc removeInContainer(ContainerGetRequest) returns (IntResponse) {}
+
+  // --------------------------------------------------------------------------
+  // Insertion Operations (Addition and insertion)
+  // Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+  // --------------------------------------------------------------------------
+
+  // [LIST, VECTOR, QUEUE] Adds an element to the end (Push Back / Enqueue).
+  rpc addElementToTail(AddToRequest) returns (BoolResponse) {}
+
+  // [LIST, VECTOR] Adds an element to the beginning (Push Front). Forbidden for QUEUE.
+  rpc addElementToHead(AddToRequest) returns (BoolResponse) {}
+
+  // [LIST, VECTOR, SET, ORDERED_SET, ORDERED_MAP, MAP] Adds elements to sets (accounts for weight in ORDERED_SET).
+  rpc addElement(AddToRequest) returns (IntResponse) {}
+
+  // [LIST, VECTOR] Inserts an element relative to another value (Insert Before/After).
+  rpc addElementToPositionByValue(AddToValRequest) returns (BoolResponse) {}
+
+
+  // --------------------------------------------------------------------------
+  // Atomic Primitives (Atomic Lock-Free operations)
+  // Applicability: ATOMIC SCALAR TYPES
+  // --------------------------------------------------------------------------
+
+  // [ATOMIC] Atomic value read.
+  rpc atomicLoad(GetRequest) returns (AtomicValue) {}
+
+  // [ATOMIC] Read and clear/delete atomic value.
+  rpc atomicLoadAndDelete(GetRequest) returns (AtomicValue) {}
+
+  // [ATOMIC] Initialize an atomic object.
+  rpc atomicCreate(AtomicCreate) returns (KeyHintResponse) {}
+
+  // [ATOMIC] Write a new value (Store).
+  rpc atomicStore(AtomicCreate) returns (KeyHintResponse) {}
+
+  // [ATOMIC] Atomic exchange (Swap) — writes new value, returns old value.
+  rpc atomicExchange(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Increment (Fetch-and-Add).
+  rpc atomicAdd(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Decrement (Fetch-and-Sub).
+  rpc atomicSub(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Bitwise OR.
+  rpc atomicOr(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Bitwise AND.
+  rpc atomicAnd(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Bitwise XOR.
+  rpc atomicXor(AtomicCreate) returns (AtomicValue) {}
+
+  // [ATOMIC] Compare-And-Swap (CAS).
+  rpc atomicCompareAndSet(AtomicCas) returns (AtomicCasRes) {}
+
+}

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.hurricache.grpc.coordinator";
+option java_outer_classname = "coordinator";
+option objc_class_prefix = "coordinator";
+package coordinator;
+
+
+message PeerAnnounceRequest {
+  string target = 1;
+  string coordinator_target = 2;
+  string replicator_target = 3;
+  uint64 uptime = 4;
+  optional string relay = 5;
+}
+
+message PeerAnnounceReply {
+  string target = 1;
+  string coordinator_target = 2;
+  string replicator_target = 3;
+  uint64 uptime = 4;
+}
+
+message Ping {
+  string target = 1;
+  string coordinator_target = 2;
+  uint64 uptime = 3;
+}
+
+message Pong {
+  string target = 1;
+  string coordinator_target = 2;
+  uint64 uptime = 3;
+}
+
+enum NodeRole {
+  UNDEFINED=0;
+  MASTER=1;BACKUP=2;
+
+}
+
+message PeerRouting {
+  string target = 1;
+  NodeRole role = 2;
+  repeated uint32 partitionIds = 3;
+}
+
+message PeerRoutingRequest {
+  string target = 1;
+}
+
+
+message RoutingInfoData {
+  uint32 max_shards=1;
+  repeated PeerRouting peerRouting = 2;
+}
+
+
+message Void{
+
+}
+
+service CoordinatorService{
+  //init message sent node to neighbours to coordinator  interface
+  rpc init(PeerAnnounceRequest) returns (PeerAnnounceReply){}
+  rpc ping(Ping) returns (Pong){}
+  rpc getRoutingInfo(PeerRoutingRequest) returns (stream PeerRouting){}
+  rpc removeRoutingInfo(PeerRoutingRequest) returns (Void){}
+  rpc sendRoutingInfo(RoutingInfoData) returns (Void){}
+  rpc readyForDataMigration(PeerAnnounceRequest) returns (Void){}
+  rpc provideGlobalRoutingInfo(Void) returns(stream RoutingInfoData){}
+}

@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated gRPC files (regenerate from proto)
+hurricache/grpc/cache_pb2.py
+hurricache/grpc/cache_pb2_grpc.py
