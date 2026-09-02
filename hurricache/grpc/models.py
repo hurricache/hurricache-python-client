@@ -1,78 +1,81 @@
-"""Wrapper models for HurriCache protobuf types."""
+"""Small, protobuf-independent public models used by the client API."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass
+from enum import Enum, IntEnum
 
 
 class LockType(IntEnum):
-    """Lock types for HurriCache objects.
-
-    Mirrors the LockType enum from the protobuf definition.
-    """
-
     NO_LOCK = 0
     WRITE_LOCK = 1
     READ_LOCK = 2
     GLOBAL = 3
 
 
+class LockStatus(IntEnum):
+    OK = 0
+    CANT_LOCK = 1
+    CANT_UNLOCK = 2
+    GENERIC_ERROR = 3
+
+
+class ContainerType(IntEnum):
+    UNDEFINED = 0
+    VECTOR = 1
+    LIST = 2
+    QUEUE = 3
+    SET = 4
+    MAP = 5
+    ORDERED_MAP = 6
+    ORDERED_SET = 7
+
+
+class Mode(str, Enum):
+    """Smart-client read routing mode."""
+
+    MASTER = "master"
+    MASTER_THEN_BACKUP = "master_then_backup"
+    # The misspelling is kept as an alias for Java source compatibility.
+    MASTER_THAN_BACKUP = "master_then_backup"
+    BACKUP = "backup"
+    LB_SMART = "load_balanced"
+
+
 @dataclass(frozen=True, slots=True)
 class KeyHintData:
-    """Wrapper for KeyHint protobuf message.
+    """Server-computed routing hashes; each component is independently optional."""
 
-    Contains hash hints used for fast key lookup and data locality.
-    Both fields are optional — the object may be unspecified (None or
-    with both hashes as 0).
-
-    Args:
-        week_hash: Fast (weak) key hash for primary filtering.
-        strong_hash: Cryptographic/full hash for accuracy and bucket distribution.
-    """
-
-    week_hash: int = 0
-    strong_hash: int = 0
+    week_hash: int | None = None
+    strong_hash: int | None = None
 
     @classmethod
     def unspecified(cls) -> "KeyHintData":
-        """Return an unspecified (empty) KeyHintData."""
-        return cls(week_hash=0, strong_hash=0)
+        return cls()
 
     @property
     def is_specified(self) -> bool:
-        """Return True if at least one hash is set."""
-        return self.week_hash != 0 or self.strong_hash != 0
+        return self.week_hash is not None or self.strong_hash is not None
 
     def __bool__(self) -> bool:
         return self.is_specified
 
 
 @dataclass(frozen=True, slots=True)
-class CasResult:
-    """Result of a Compare-And-Swap (CAS) operation.
+class Payload:
+    value: bytes
 
-    Args:
-        success: True if the swap was performed, False otherwise.
-        expected_value: The actual value read from the server (old value on success,
-                        or actual value on failure).
-    """
-
-    success: bool
-    expected_value: int
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value", bytes(self.value))
 
 
 @dataclass(frozen=True, slots=True)
-class OrderedPayload:
-    """Wrapper for OrderedValue protobuf message.
-
-    Used for ORDERED_SET and ORDERED_MAP containers.
-    Contains a value with an associated weight/order for sorting.
-
-    Args:
-        value: The data payload (bytes).
-        order: The weight/order value (uint64) used for sorting.
-    """
-
-    value: bytes
+class OrderedPayload(Payload):
     order: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CasResult:
+    success: bool
+    expected_value: int | None = None
+    hint: KeyHintData | None = None

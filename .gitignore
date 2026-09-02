@@ -209,6 +209,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Scratch output used by tools/generate_proto.py.
+tools/_generated/*.py
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
@@ -217,6 +220,3 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Generated gRPC files (regenerate from proto)
-hurricache/grpc/cache_pb2.py
-hurricache/grpc/cache_pb2_grpc.py
