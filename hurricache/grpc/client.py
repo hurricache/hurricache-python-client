@@ -14,26 +14,30 @@ Value-returning methods return ``bytes`` and raise:
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import grpc
 
 from hurricache.grpc import cache_pb2, cache_pb2_grpc
-from hurricache.grpc.exceptions import HurriCacheError, HurriCacheRpcError, KeyNotFoundError, PermissionDeniedError
-from hurricache.grpc.models import CasResult, KeyHintData, LockType, OrderedPayload
-from hurricache.grpc.utils import build_get_request, create_key, create_ordered_key, create_ordered_value, create_value
+from hurricache.grpc.exceptions import KeyNotFoundError, mapped_rpc_error
+from hurricache.grpc.models import CasResult, KeyHintData, LockStatus, LockType, OrderedPayload
+from hurricache.grpc.utils import (
+    MAX_RPC_SIZE,
+    build_get_request,
+    create_key,
+    create_ordered_key,
+    create_ordered_value,
+    create_value,
+    decode_batch,
+    decode_hint,
+    decode_key,
+    decode_value,
+)
 
 
 def _handle_rpc_error(method: str, error: grpc.RpcError, key: bytes = b"") -> None:
     """Convert gRPC error to appropriate Python exception."""
-    code = error.code() if hasattr(error, "code") and callable(error.code) else None
-    details = error.details() if hasattr(error, "details") and callable(error.details) else str(error)
-
-    if code == grpc.StatusCode.NOT_FOUND:
-        raise KeyNotFoundError(key, details)
-    elif code == grpc.StatusCode.PERMISSION_DENIED:
-        raise PermissionDeniedError(key, details)
-    else:
-        raise HurriCacheRpcError(method, error)
+    raise mapped_rpc_error(method, error, key)
 
 
 def _extract_value(response: cache_pb2.ValueResponse) -> bytes:
@@ -41,9 +45,9 @@ def _extract_value(response: cache_pb2.ValueResponse) -> bytes:
     if response is None or (not response.HasField("value_unordered") and not response.HasField("value_ordered")):
         raise KeyNotFoundError(b"", "Value response is empty")
     if response.HasField("value_unordered") and response.value_unordered is not None:
-        return response.value_unordered.value.payload
+        return decode_value(response.value_unordered)
     if response.HasField("value_ordered") and response.value_ordered is not None:
-        return response.value_ordered.value.payload
+        return decode_value(response.value_ordered)
     raise KeyNotFoundError(b"", "Value response has no value field")
 
 
@@ -62,7 +66,7 @@ class HurriCacheClient:
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 50051,
+        port: int = 50000,
         default_client_id: int = 0,
         default_timeout: float = 1.0,
         credentials: grpc.ChannelCredentials | None = None,
@@ -105,6 +109,7 @@ class HurriCacheClient:
     def stub(self) -> cache_pb2_grpc.HurriCacheGrpcServiceStub:
         if self._stub is None:
             _ = self.channel
+        assert self._stub is not None
         return self._stub
 
     def close(self) -> None:
@@ -145,11 +150,147 @@ class HurriCacheClient:
 
     def _call(self, method_name: str, rpc_callable, *args, **kwargs) -> grpc.Call:
         """Execute an RPC call and handle errors."""
+        kwargs.setdefault("timeout", self._default_timeout)
         try:
             return rpc_callable(*args, **kwargs)
         except grpc.RpcError as e:
-            _handle_rpc_error(method_name, e, kwargs.get("key", args[0] if args else b""))
+            request = args[0] if args else None
+            key = decode_key(request.key) if request is not None and hasattr(request, "key") else b""
+            _handle_rpc_error(method_name, e, key)
             raise  # pragma: no cover
+
+    def _collect_stream(self, method_name: str, stream, key: bytes | str):
+        result: Any = None
+        try:
+            for batch in stream:
+                decoded = decode_batch(batch)
+                if result is None:
+                    result = {} if isinstance(decoded, dict) else []
+                if isinstance(result, dict):
+                    result.update(decoded)
+                else:
+                    result.extend(decoded)
+        except grpc.RpcError as error:
+            _handle_rpc_error(method_name, error, key.encode() if isinstance(key, str) else key)
+        return [] if result is None else result
+
+    def _create_container_chunked(self, request: cache_pb2.CreateContainerRequest, **kwargs) -> KeyHintData:
+        fields = ("key_unordered", "value_unordered", "key_ordered", "value_ordered")
+        original = {field: list(getattr(request, field)) for field in fields}
+        for field in fields:
+            request.ClearField(field)
+
+        pairs: list[tuple[object | None, object | None, str, str]] = []
+        if original["key_unordered"]:
+            if len(original["key_unordered"]) != len(original["value_unordered"]):
+                raise ValueError("map keys and values must have equal lengths")
+            pairs = [
+                (key, value, "key_unordered", "value_unordered")
+                for key, value in zip(original["key_unordered"], original["value_unordered"], strict=True)
+            ]
+        elif original["key_ordered"]:
+            if len(original["key_ordered"]) != len(original["value_unordered"]):
+                raise ValueError("ordered-map keys and values must have equal lengths")
+            pairs = [
+                (key, value, "key_ordered", "value_unordered")
+                for key, value in zip(original["key_ordered"], original["value_unordered"], strict=True)
+            ]
+        elif original["value_ordered"]:
+            pairs = [(None, value, "", "value_ordered") for value in original["value_ordered"]]
+        else:
+            pairs = [(None, value, "", "value_unordered") for value in original["value_unordered"]]
+
+        split = 0
+        for split, (key_item, value_item, key_field, value_field) in enumerate(pairs):
+            extra = value_item.ByteSize() + (key_item.ByteSize() if key_item is not None else 0)
+            if request.ByteSize() + extra > MAX_RPC_SIZE:
+                if split == 0:
+                    raise ValueError("one element exceeds the maximum HurriCache request size")
+                break
+            getattr(request, value_field).append(value_item)
+            if key_item is not None:
+                getattr(request, key_field).append(key_item)
+        else:
+            split = len(pairs)
+
+        response = self._call("create_container", self.stub.createContainer, request, **kwargs)
+        hint = decode_hint(response) or KeyHintData.unspecified()
+        remaining = pairs[split:]
+        while remaining:
+            add = cache_pb2.AddToRequest(key=request.key, type=request.type)
+            consumed = 0
+            for key_item, value_item, key_field, value_field in remaining:
+                assert value_item is not None
+                extra = value_item.ByteSize() + (key_item.ByteSize() if key_item is not None else 0)
+                if add.ByteSize() + extra > MAX_RPC_SIZE:
+                    if consumed == 0:
+                        raise ValueError("one element exceeds the maximum HurriCache request size")
+                    break
+                getattr(add, value_field).append(value_item)
+                if key_item is not None:
+                    getattr(add, key_field).append(key_item)
+                consumed += 1
+            self._call("add_element", self.stub.addElement, add, **kwargs)
+            remaining = remaining[consumed:]
+        return hint
+
+    def _call_add_chunked(self, name: str, rpc, request: cache_pb2.AddToRequest, **kwargs):
+        fields = ("key_unordered", "value_unordered", "key_ordered", "value_ordered")
+        original = {field: list(getattr(request, field)) for field in fields}
+        pairs: list[tuple[object | None, object | None, str, str]]
+        if original["key_unordered"]:
+            if len(original["key_unordered"]) != len(original["value_unordered"]):
+                raise ValueError("map keys and values must have equal lengths")
+            pairs = [
+                (key, value, "key_unordered", "value_unordered")
+                for key, value in zip(original["key_unordered"], original["value_unordered"], strict=True)
+            ]
+        elif original["key_ordered"]:
+            values = original["value_unordered"] or original["value_ordered"]
+            if len(original["key_ordered"]) != len(values):
+                raise ValueError("ordered-map keys and values must have equal lengths")
+            value_field = "value_unordered" if original["value_unordered"] else "value_ordered"
+            pairs = [
+                (key, value, "key_ordered", value_field)
+                for key, value in zip(original["key_ordered"], values, strict=True)
+            ]
+        elif original["value_ordered"]:
+            pairs = [(None, value, "", "value_ordered") for value in original["value_ordered"]]
+        else:
+            pairs = [(None, value, "", "value_unordered") for value in original["value_unordered"]]
+
+        if not pairs:
+            response = self._call(name, rpc, request, **kwargs)
+            return response.size if hasattr(response, "size") else response.value
+        total = 0
+        all_ok = True
+        size_response = False
+        offset = 0
+        while offset < len(pairs):
+            chunk = cache_pb2.AddToRequest(key=request.key)
+            for optional in ("type", "ttl", "pos"):
+                if request.HasField(optional):
+                    setattr(chunk, optional, getattr(request, optional))
+            consumed = 0
+            for key_item, value_item, key_field, value_field in pairs[offset:]:
+                assert value_item is not None
+                extra = value_item.ByteSize() + (key_item.ByteSize() if key_item is not None else 0)
+                if chunk.ByteSize() + extra > MAX_RPC_SIZE:
+                    if consumed == 0:
+                        raise ValueError("one element exceeds the maximum HurriCache request size")
+                    break
+                getattr(chunk, value_field).append(value_item)
+                if key_item is not None:
+                    getattr(chunk, key_field).append(key_item)
+                consumed += 1
+            response = self._call(name, rpc, chunk, **kwargs)
+            if hasattr(response, "size"):
+                size_response = True
+                total += response.size
+            else:
+                all_ok = all_ok and response.value
+            offset += consumed
+        return total if size_response else all_ok
 
     # ------------------------------------------------------------------
     # Lock Management
@@ -161,9 +302,9 @@ class HurriCacheClient:
         hint: KeyHintData | None = None,
         lock_type: LockType = LockType.NO_LOCK,
         client_id: int | None = None,
-        lock_duration: int = 0,
+        lock_duration: float = 0,
         **kwargs,
-    ) -> bool:
+    ) -> LockStatus:
         """Acquire a lock on a key.
 
         Args:
@@ -171,10 +312,10 @@ class HurriCacheClient:
             hint: Optional KeyHintData for routing.
             lock_type: LockType (NO_LOCK, WRITE_LOCK, READ_LOCK, GLOBAL).
             client_id: Client ID holding the lock. Only this client can unlock.
-            lock_duration: Lock duration in ms. Server auto-releases after this.
+            lock_duration: Lock duration in seconds. Server auto-releases after this.
 
         Returns:
-            True if lock acquired, False otherwise.
+            Complete LockStatus returned by the server.
 
         Raises:
             PermissionDeniedError: If key is already locked by another client.
@@ -183,10 +324,10 @@ class HurriCacheClient:
             key=self._build_key(key, hint, client_id),
             lockType=cache_pb2.LockType.Value(LockType(lock_type).name),
             clientId=self._resolve_client_id(client_id),
-            lockDuration=lock_duration,
+            lockDuration=max(0, int(lock_duration * 1000)),
         )
         response = self._call("lock_object", self.stub.lockObject, request, **kwargs)
-        return response.result == 0  # OK = 0
+        return LockStatus(response.result)
 
     def unlock_object(
         self,
@@ -194,7 +335,7 @@ class HurriCacheClient:
         hint: KeyHintData | None = None,
         client_id: int | None = None,
         **kwargs,
-    ) -> bool:
+    ) -> LockStatus:
         """Release a lock on a key.
 
         Args:
@@ -203,14 +344,14 @@ class HurriCacheClient:
             client_id: Must match the client_id that acquired the lock.
 
         Returns:
-            True if unlock succeeded, False otherwise.
+            Complete LockStatus returned by the server.
         """
         request = cache_pb2.UnLockRequest(
             key=self._build_key(key, hint, client_id),
             clientId=self._resolve_client_id(client_id),
         )
         response = self._call("unlock_object", self.stub.unlockObject, request, **kwargs)
-        return response.result == 0
+        return LockStatus(response.result)
 
     # ------------------------------------------------------------------
     # TTL Management
@@ -262,7 +403,7 @@ class HurriCacheClient:
         """
         request = self._build_get_req(key, hint, client_id)
         response = self._call("get_ttl", self.stub.getTtl, request, **kwargs)
-        return response.ttl if response.HasField("ttl") else 0
+        return response.ttl - int(time.time() * 1000) if response.HasField("ttl") else -1
 
     # ------------------------------------------------------------------
     # Key-Value Operations
@@ -294,8 +435,7 @@ class HurriCacheClient:
             value=create_value(value, ttl, self._resolve_client_id(client_id)),
         )
         response = self._call("create_key_value", self.stub.createKeyValue, request, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return decode_hint(response) or KeyHintData.unspecified()
 
     def get_value(
         self,
@@ -393,7 +533,7 @@ class HurriCacheClient:
         )
         response = self._call("update_value", self.stub.updateValue, request, **kwargs)
         if response.HasField("value") and response.value is not None:
-            return response.value.value.payload
+            return decode_value(response.value)
         return b""
 
     def remove(
@@ -449,9 +589,6 @@ class HurriCacheClient:
         return self._create_unordered_container(
             key, hint, cache_pb2.ContainerType.VECTOR, values, ttl, client_id, **kwargs
         )
-        return self._create_unordered_container(
-            key, hint, cache_pb2.ContainerType.VECTOR, values, ttl, client_id, **kwargs
-        )
 
     def create_list(
         self,
@@ -474,9 +611,6 @@ class HurriCacheClient:
         Returns:
             KeyHintData for subsequent operations.
         """
-        return self._create_unordered_container(
-            key, hint, cache_pb2.ContainerType.LIST, values, ttl, client_id, **kwargs
-        )
         return self._create_unordered_container(
             key, hint, cache_pb2.ContainerType.LIST, values, ttl, client_id, **kwargs
         )
@@ -505,9 +639,6 @@ class HurriCacheClient:
         return self._create_unordered_container(
             key, hint, cache_pb2.ContainerType.QUEUE, values, ttl, client_id, **kwargs
         )
-        return self._create_unordered_container(
-            key, hint, cache_pb2.ContainerType.QUEUE, values, ttl, client_id, **kwargs
-        )
 
     def create_set(
         self,
@@ -533,9 +664,6 @@ class HurriCacheClient:
         return self._create_unordered_container(
             key, hint, cache_pb2.ContainerType.SET, values, ttl, client_id, **kwargs
         )
-        return self._create_unordered_container(
-            key, hint, cache_pb2.ContainerType.SET, values, ttl, client_id, **kwargs
-        )
 
     def _create_unordered_container(
         self,
@@ -549,10 +677,6 @@ class HurriCacheClient:
     ) -> KeyHintData:
         cid = self._resolve_client_id(client_id)
         proto_key = self._build_key(key, hint, cid)
-        if hint is not None and hint.is_specified:
-            proto_key.keyHint.week_hash = hint.week_hash
-            proto_key.keyHint.strong_hash = hint.strong_hash
-
         values_proto = [create_value(v, 0, cid) for v in (values or [])]
 
         builder = cache_pb2.CreateContainerRequest(
@@ -562,9 +686,7 @@ class HurriCacheClient:
         )
         if ttl > 0:
             builder.ttl = int(time.time() * 1000) + ttl
-        response = self._call("create_unordered_container", self.stub.createContainer, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return self._create_container_chunked(builder, **kwargs)
 
     # ------------------------------------------------------------------
     # Container Creation (Map)
@@ -594,11 +716,9 @@ class HurriCacheClient:
             KeyHintData for subsequent operations.
         """
         cid = self._resolve_client_id(client_id)
+        if len(keys or []) != len(values or []):
+            raise ValueError("map keys and values must have equal lengths")
         proto_key = self._build_key(key, hint, cid)
-        if hint is not None and hint.is_specified:
-            proto_key.keyHint.week_hash = hint.week_hash
-            proto_key.keyHint.strong_hash = hint.strong_hash
-
         proto_keys = [create_key(k, None, cid) for k in (keys or [])]
         proto_values = [create_value(v, 0, cid) for v in (values or [])]
 
@@ -610,9 +730,7 @@ class HurriCacheClient:
         )
         if ttl > 0:
             builder.ttl = int(time.time() * 1000) + ttl
-        response = self._call("create_map", self.stub.createContainer, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return self._create_container_chunked(builder, **kwargs)
 
     # ------------------------------------------------------------------
     # Container Creation (OrderedSet)
@@ -641,10 +759,6 @@ class HurriCacheClient:
         """
         cid = self._resolve_client_id(client_id)
         proto_key = self._build_key(key, hint, cid)
-        if hint is not None and hint.is_specified:
-            proto_key.keyHint.week_hash = hint.week_hash
-            proto_key.keyHint.strong_hash = hint.strong_hash
-
         values_proto = [create_ordered_value(v.value, v.order, 0, cid) for v in (values or [])]
 
         builder = cache_pb2.CreateContainerRequest(
@@ -654,9 +768,7 @@ class HurriCacheClient:
         )
         if ttl > 0:
             builder.ttl = int(time.time() * 1000) + ttl
-        response = self._call("create_ordered_set", self.stub.createContainer, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return self._create_container_chunked(builder, **kwargs)
 
     # ------------------------------------------------------------------
     # Container Creation (OrderedMap)
@@ -686,11 +798,9 @@ class HurriCacheClient:
             KeyHintData for subsequent operations.
         """
         cid = self._resolve_client_id(client_id)
+        if len(keys or []) != len(values or []):
+            raise ValueError("ordered-map keys and values must have equal lengths")
         proto_key = self._build_key(key, hint, cid)
-        if hint is not None and hint.is_specified:
-            proto_key.keyHint.week_hash = hint.week_hash
-            proto_key.keyHint.strong_hash = hint.strong_hash
-
         proto_keys = [create_ordered_key(k.value, k.order, 0, cid) for k in (keys or [])]
         proto_values = [create_value(v, 0, cid) for v in (values or [])]
 
@@ -702,29 +812,7 @@ class HurriCacheClient:
         )
         if ttl > 0:
             builder.ttl = int(time.time() * 1000) + ttl
-        response = self._call("create_ordered_map", self.stub.createContainer, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
-        cid = self._resolve_client_id(client_id)
-        proto_key = self._build_key(key, hint, cid)
-        if hint is not None and hint.is_specified:
-            proto_key.keyHint.week_hash = hint.week_hash
-            proto_key.keyHint.strong_hash = hint.strong_hash
-
-        proto_keys = [create_ordered_key(k.value, k.order, 0, cid) for k in (keys or [])]
-        proto_values = [create_value(v, 0, cid) for v in (values or [])]
-
-        builder = cache_pb2.CreateContainerRequest(
-            key=proto_key,
-            type=cache_pb2.ContainerType.ORDERED_MAP,
-            key_ordered=proto_keys,
-            value_unordered=proto_values,
-        )
-        if ttl > 0:
-            builder.ttl = int(time.time() * 1000) + ttl
-        response = self._call("create_ordered_map", self.stub.createContainer, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return self._create_container_chunked(builder, **kwargs)
 
     def get_container(
         self,
@@ -744,7 +832,8 @@ class HurriCacheClient:
             Stream of BatchValueResponse.
         """
         request = self._build_get_req(key, hint, client_id)
-        return self._call("get_container", self.stub.getContainer, request, **kwargs)
+        stream = self._call("get_container", self.stub.getContainer, request, **kwargs)
+        return self._collect_stream("get_container", stream, key)
 
     def get_size(
         self,
@@ -1062,7 +1151,7 @@ class HurriCacheClient:
         )
         response = self._call("update_value_in_container", self.stub.updateValueInContainer, request, **kwargs)
         if response.HasField("value") and response.value is not None:
-            return response.value.value.payload
+            return decode_value(response.value)
         return b""
 
     # ------------------------------------------------------------------
@@ -1136,7 +1225,8 @@ class HurriCacheClient:
             end=end,
             reverse=reverse,
         )
-        return self._call("get_element_in_range", self.stub.getElementInRange, request, **kwargs)
+        stream = self._call("get_element_in_range", self.stub.getElementInRange, request, **kwargs)
+        return self._collect_stream("get_element_in_range", stream, key)
 
     # ------------------------------------------------------------------
     # Deletion Operations
@@ -1309,8 +1399,7 @@ class HurriCacheClient:
             key=self._build_key(key, hint, client_id),
             value_unordered=[create_value(v, ttl, cid) for v in (values or [])],
         )
-        response = self._call("add_element_to_tail", self.stub.addElementToTail, request, **kwargs)
-        return response.value
+        return self._call_add_chunked("add_element_to_tail", self.stub.addElementToTail, request, **kwargs)
 
     def add_element_to_head(
         self,
@@ -1338,8 +1427,7 @@ class HurriCacheClient:
             key=self._build_key(key, hint, client_id),
             value_unordered=[create_value(v, ttl, cid) for v in (values or [])],
         )
-        response = self._call("add_element_to_head", self.stub.addElementToHead, request, **kwargs)
-        return response.value
+        return self._call_add_chunked("add_element_to_head", self.stub.addElementToHead, request, **kwargs)
 
     def add_element(
         self,
@@ -1368,6 +1456,8 @@ class HurriCacheClient:
             Number of elements added.
         """
         cid = self._resolve_client_id(client_id)
+        if keys is not None and len(keys) != len(values or []):
+            raise ValueError("map keys and values must have equal lengths")
         proto_values = [create_value(v, ttl, cid) for v in (values or [])]
         proto_keys = [create_key(k, None, cid) for k in (keys or [])]
         request = cache_pb2.AddToRequest(
@@ -1375,8 +1465,7 @@ class HurriCacheClient:
             value_unordered=proto_values,
             key_unordered=proto_keys,
         )
-        response = self._call("add_element", self.stub.addElement, request, **kwargs)
-        return response.size
+        return self._call_add_chunked("add_element", self.stub.addElement, request, **kwargs)
 
     def add_element_hash_map(
         self,
@@ -1515,8 +1604,7 @@ class HurriCacheClient:
             value_unordered=proto_values,
             pos=pos if pos >= 0 else 0,
         )
-        response = self._call("add_element_unordered", self.stub.addElement, request, **kwargs)
-        return response.size
+        return self._call_add_chunked("add_element_unordered", self.stub.addElement, request, **kwargs)
 
     def add_element_ordered(
         self,
@@ -1547,17 +1635,15 @@ class HurriCacheClient:
             Number of elements added.
         """
         cid = self._resolve_client_id(client_id)
-        proto_keys = [create_ordered_key(k.value, k.order, 0, cid) for k in (keys or [])]
-        proto_values = [create_ordered_value(v.value, v.order, 0, cid) for v in (values or [])]
-
-        request = cache_pb2.AddToRequest(
-            key=self._build_key(key, hint, client_id),
-            key_ordered=proto_keys,
-            value_ordered=proto_values,
-            pos=pos,
-        )
-        response = self._call("add_element_ordered", self.stub.addElement, request, **kwargs)
-        return response.size
+        request = cache_pb2.AddToRequest(key=self._build_key(key, hint, client_id), pos=pos)
+        if keys:
+            if len(keys) != len(values or []):
+                raise ValueError("ordered-map keys and values must have equal lengths")
+            request.key_ordered.extend(create_ordered_key(k, client_id=cid) for k in keys)
+            request.value_unordered.extend(create_value(v, ttl, cid) for v in (values or []))
+        else:
+            request.value_ordered.extend(create_ordered_value(v, ttl=ttl, client_id=cid) for v in (values or []))
+        return self._call_add_chunked("add_element_ordered", self.stub.addElement, request, **kwargs)
 
     # ------------------------------------------------------------------
     # Atomic Primitives
@@ -1641,8 +1727,7 @@ class HurriCacheClient:
             builder.lock_info.type = cache_pb2.LockType.NO_LOCK
             builder.lock_info.lockedBy = cid
         response = self._call("atomic_create", self.stub.atomicCreate, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return decode_hint(response) or KeyHintData.unspecified()
 
     def atomic_store(
         self,
@@ -1677,8 +1762,7 @@ class HurriCacheClient:
             builder.lock_info.type = cache_pb2.LockType.NO_LOCK
             builder.lock_info.lockedBy = cid
         response = self._call("atomic_store", self.stub.atomicStore, builder, **kwargs)
-        kh = response.keyHint
-        return KeyHintData(week_hash=kh.week_hash, strong_hash=kh.strong_hash)
+        return decode_hint(response) or KeyHintData.unspecified()
 
     def atomic_exchange(
         self,
@@ -1928,5 +2012,5 @@ class HurriCacheClient:
             builder.lock_info.type = cache_pb2.LockType.NO_LOCK
             builder.lock_info.lockedBy = cid
         response = self._call("atomic_compare_and_set", self.stub.atomicCompareAndSet, builder, **kwargs)
-        actual_val = response.expected.val if response.HasField("expected") else 0
-        return CasResult(success=response.result, expected_value=actual_val)
+        actual_val = response.expected.val if response.HasField("expected") else None
+        return CasResult(success=response.result, expected_value=actual_val, hint=decode_hint(response))

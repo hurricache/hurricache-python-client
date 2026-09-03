@@ -8,19 +8,21 @@ Server must be running on 127.0.0.1:50000 without authentication.
 
 from __future__ import annotations
 
+import random
+import time
+
 import pytest
 
 from hurricache import (
     HurriCacheClient,
+    HurriCacheError,
     KeyHintData,
+    KeyNotFoundError,
+    LockStatus,
     LockType,
     OrderedPayload,
-    KeyNotFoundError,
-    PermissionDeniedError,
-    HurriCacheError,
 )
 from hurricache.grpc import cache_pb2
-
 
 # ---------------------------------------------------------------------------
 # Module-level client (single connection for all tests)
@@ -36,9 +38,6 @@ def client():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-import time
-import random
 
 def _unique_key(prefix: str) -> bytes:
     """Generate a unique key for tests."""
@@ -144,12 +143,12 @@ class TestLock:
             self.key,
             lock_type=LockType.WRITE_LOCK,
             client_id=1,
-            lock_duration=5000,
+            lock_duration=5.0,
         )
-        assert result is True
+        assert result is LockStatus.OK
 
         unlock_result = client.unlock_object(self.key, client_id=1)
-        assert unlock_result is True
+        assert unlock_result is LockStatus.OK
 
     def test_lock_with_read_lock(self, client):
         client.create_key_value(self.key, value=b"data")
@@ -157,14 +156,14 @@ class TestLock:
             self.key,
             lock_type=LockType.READ_LOCK,
             client_id=1,
-            lock_duration=5000,
+            lock_duration=5.0,
         )
-        assert result is True
+        assert result is LockStatus.OK
 
     def test_lock_default_type(self, client):
         client.create_key_value(self.key, value=b"data")
         result = client.lock_object(self.key, client_id=1)
-        assert result is True
+        assert result is LockStatus.OK
 
 
 # ---------------------------------------------------------------------------
