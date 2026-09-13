@@ -1357,11 +1357,11 @@ class HurriCacheGrpcServiceStub:
         self.addElementToTail = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/addElementToTail',
                 request_serializer=cache__pb2.AddToRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
+                response_deserializer=cache__pb2.IntResponse.FromString)
         self.addElementToHead = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/addElementToHead',
                 request_serializer=cache__pb2.AddToRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
+                response_deserializer=cache__pb2.IntResponse.FromString)
         self.addElement = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/addElement',
                 request_serializer=cache__pb2.AddToRequest.SerializeToString,
@@ -1369,7 +1369,7 @@ class HurriCacheGrpcServiceStub:
         self.addElementToPositionByValue = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/addElementToPositionByValue',
                 request_serializer=cache__pb2.AddToValRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
+                response_deserializer=cache__pb2.IntResponse.FromString)
         self.atomicLoad = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicLoad',
                 request_serializer=cache__pb2.GetRequest.SerializeToString,
@@ -1560,7 +1560,7 @@ class HurriCacheGrpcServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def existKeyInContainer(self, request, context):
-        """[MAP, ORDERED MAP]
+        """[MAP, ORDERED MAP, SET]
         Checks for key presence inside the container.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -1943,12 +1943,12 @@ def add_HurriCacheGrpcServiceServicer_to_server(servicer, server):
             'addElementToTail': grpc.unary_unary_rpc_method_handler(
                     servicer.addElementToTail,
                     request_deserializer=cache__pb2.AddToRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
             'addElementToHead': grpc.unary_unary_rpc_method_handler(
                     servicer.addElementToHead,
                     request_deserializer=cache__pb2.AddToRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
             'addElement': grpc.unary_unary_rpc_method_handler(
                     servicer.addElement,
@@ -1958,7 +1958,7 @@ def add_HurriCacheGrpcServiceServicer_to_server(servicer, server):
             'addElementToPositionByValue': grpc.unary_unary_rpc_method_handler(
                     servicer.addElementToPositionByValue,
                     request_deserializer=cache__pb2.AddToValRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
             'atomicLoad': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicLoad,
@@ -2800,7 +2800,7 @@ class HurriCacheGrpcService:
             target,
             '/hurricache.HurriCacheGrpcService/addElementToTail',
             cache__pb2.AddToRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
+            cache__pb2.IntResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -2826,7 +2826,7 @@ class HurriCacheGrpcService:
             target,
             '/hurricache.HurriCacheGrpcService/addElementToHead',
             cache__pb2.AddToRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
+            cache__pb2.IntResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -2878,7 +2878,7 @@ class HurriCacheGrpcService:
             target,
             '/hurricache.HurriCacheGrpcService/addElementToPositionByValue',
             cache__pb2.AddToValRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
+            cache__pb2.IntResponse.FromString,
             options,
             channel_credentials,
             insecure,

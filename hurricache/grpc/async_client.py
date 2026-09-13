@@ -9,10 +9,11 @@ from typing import Any
 import grpc
 
 from hurricache.grpc import cache_pb2, cache_pb2_grpc
-from hurricache.grpc.exceptions import KeyNotFoundError, mapped_rpc_error
-from hurricache.grpc.models import CasResult, KeyHintData, LockStatus, LockType
+from hurricache.grpc.batching import check, continuation, plan
+from hurricache.grpc.exceptions import HurriCacheError, KeyNotFoundError, PartialOperationError, mapped_rpc_error
+from hurricache.grpc.models import CasResult, KeyHintData, LockStatus, LockType, OrderedPayload, Payload
+from hurricache.grpc.operation import Defaults, absolute_ttl, configure, lock_expiration, operations, remaining
 from hurricache.grpc.utils import (
-    MAX_RPC_SIZE,
     KeyLike,
     build_get_request,
     create_key,
@@ -38,7 +39,8 @@ def _decode_value_response(response: Any) -> bytes:
     raise KeyNotFoundError(b"", "Value response is empty")
 
 
-class AsyncHurriCacheClient:
+@operations
+class AsyncHurriCacheClient(Defaults):
     """Asynchronous direct client backed exclusively by ``grpc.aio``."""
 
     def __init__(
@@ -49,7 +51,11 @@ class AsyncHurriCacheClient:
         default_timeout: float = 1.0,
         credentials: grpc.ChannelCredentials | None = None,
         compression: grpc.Compression | None = None,
+        *,
+        default_ttl: int = 0,
+        default_compression_threshold: int = 1024,
     ) -> None:
+        configure(self, default_ttl, default_compression_threshold)
         self._host = host
         self._port = port
         self._default_client_id = default_client_id
@@ -94,29 +100,44 @@ class AsyncHurriCacheClient:
         decoder: Callable[[Any], Any] = _identity,
         **kwargs: Any,
     ) -> Any:
-        kwargs.setdefault("timeout", self._default_timeout)
+        kwargs["timeout"] = remaining(kwargs.get("timeout", self._default_timeout))
         try:
+            check(request)
             return decoder(await rpc(request, **kwargs))
         except grpc.aio.AioRpcError as error:
             key = decode_key(request.key) if hasattr(request, "key") else b""
             raise mapped_rpc_error(name, error, key) from error
 
     async def _stream(self, name: str, rpc: Callable[..., Any], request: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("timeout", self._default_timeout)
+        kwargs["timeout"] = remaining(kwargs.get("timeout", self._default_timeout))
         result: Any = None
+        completed_chunks = 0
+        completed_items = 0
         try:
+            check(request)
             call = rpc(request, **kwargs)
             async for batch in call:
+                remaining()
                 decoded = decode_batch(batch)
+                completed_chunks += 1
+                completed_items += len(decoded)
                 if result is None:
                     result = {} if isinstance(decoded, dict) else []
                 result.update(decoded) if isinstance(result, dict) else result.extend(decoded)
         except grpc.aio.AioRpcError as error:
             key = decode_key(request.key) if hasattr(request, "key") else b""
-            raise mapped_rpc_error(name, error, key) from error
+            mapped = mapped_rpc_error(name, error, key)
+            if completed_chunks:
+                raise PartialOperationError(completed_chunks, completed_items, result) from mapped
+            raise mapped from error
+        except Exception as error:
+            if completed_chunks:
+                raise PartialOperationError(completed_chunks, completed_items, result) from error
+            raise
         return [] if result is None else result
 
     async def close(self, grace: float | None = None) -> None:
+        self._closed = True
         if self._channel is not None:
             await self._channel.close(grace)
             self._channel = None
@@ -139,7 +160,7 @@ class AsyncHurriCacheClient:
     ) -> LockStatus:
         cid = self._client_id(client_id)
         request = cache_pb2.LockRequest(
-            key=self._key(key, hint, cid), lockType=int(lock_type), clientId=cid, lockDuration=int(lock_duration * 1000)
+            key=self._key(key, hint, cid), lockType=int(lock_type), clientId=cid, lockDuration=lock_expiration(lock_duration)
         )
         return await self._unary("lock_object", self.stub.lockObject, request, lambda r: LockStatus(r.result), **kwargs)
 
@@ -153,7 +174,7 @@ class AsyncHurriCacheClient:
     async def set_ttl(
         self, key: KeyLike, hint: KeyHintData | None = None, ttl: int = 0, client_id: int | None = None, **kwargs: Any
     ) -> bool:
-        request = cache_pb2.TtlRequest(key=self._key(key, hint, client_id), ttl=int(time.time() * 1000) + ttl)
+        request = cache_pb2.TtlRequest(key=self._key(key, hint, client_id), ttl=absolute_ttl(ttl))
         return await self._unary("set_ttl", self.stub.setTtl, request, lambda r: r.value, **kwargs)
 
     async def get_ttl(
@@ -169,12 +190,13 @@ class AsyncHurriCacheClient:
         key: KeyLike,
         hint: KeyHintData | None = None,
         value: bytes = b"",
-        ttl: int = 0,
+        ttl: int | None = None,
         client_id: int | None = None,
         **kwargs: Any,
     ) -> KeyHintData:
+        ttl = self._default_ttl if ttl is None else ttl
         cid = self._client_id(client_id)
-        request = cache_pb2.CreateRequest(key=self._key(key, hint, cid), value=create_value(value, ttl, cid))
+        request = cache_pb2.CreateRequest(key=self._key(key, hint, cid), value=create_value(value, ttl, cid, compress=True))
         return await self._unary(
             "create_key_value",
             self.stub.createKeyValue,
@@ -211,12 +233,13 @@ class AsyncHurriCacheClient:
         key: KeyLike,
         hint: KeyHintData | None = None,
         value: bytes = b"",
-        ttl: int = 0,
+        ttl: int | None = None,
         client_id: int | None = None,
         **kwargs: Any,
     ) -> bytes:
+        ttl = self._default_ttl if ttl is None else ttl
         cid = self._client_id(client_id)
-        request = cache_pb2.UpdateRequest(key=self._key(key, hint, cid), value=create_value(value, ttl, cid))
+        request = cache_pb2.UpdateRequest(key=self._key(key, hint, cid), value=create_value(value, ttl, cid, compress=True))
         return await self._unary(
             "update_value", self.stub.updateValue, request, lambda r: decode_value(r.value) if r.HasField("value") else b"", **kwargs
         )
@@ -241,64 +264,68 @@ class AsyncHurriCacheClient:
         **kwargs: Any,
     ) -> KeyHintData:
         cid = self._client_id(client_id)
-        if keys is not None and len(keys) != len(values or ()):
+        if container_type in (cache_pb2.MAP, cache_pb2.ORDERED_MAP) and len(keys or ()) != len(values or ()):
             raise ValueError("map keys and values must have equal lengths")
         value_messages = [
-            create_ordered_value(v) if ordered_values else create_value(v, 0, cid) for v in (values or ())
+            create_ordered_value(v, ttl=ttl, client_id=cid) if ordered_values else create_value(v, ttl if container_type in (cache_pb2.MAP, cache_pb2.ORDERED_MAP) else 0, cid, compress=ordered_keys) for v in (values or ())
         ]
-        key_messages = [create_ordered_key(k, client_id=cid) if ordered_keys else create_key(k, None, cid) for k in (keys or ())]
+        key_messages = [create_ordered_key(k, client_id=cid) if ordered_keys else create_key(k, None, cid, compress=False) for k in (keys or ())]
         request = cache_pb2.CreateContainerRequest(key=self._key(key, hint, cid), type=container_type)
         if ttl > 0:
-            request.ttl = int(time.time() * 1000) + ttl
+            request.ttl = absolute_ttl(ttl)
         value_field = request.value_ordered if ordered_values else request.value_unordered
         key_field = request.key_ordered if ordered_keys else request.key_unordered
-        index = 0
-        for index, value_message in enumerate(value_messages):
-            pair_size = value_message.ByteSize() + (key_messages[index].ByteSize() if key_messages else 0)
-            if request.ByteSize() + pair_size > MAX_RPC_SIZE:
-                break
-            value_field.append(value_message)
-            if key_messages:
-                key_field.append(key_messages[index])
-        else:
-            index = len(value_messages)
-        hint_result = await self._unary(
-            "create_container",
-            self.stub.createContainer,
-            request,
-            lambda r: decode_hint(r) or KeyHintData.unspecified(),
-            **kwargs,
-        )
-        if index < len(value_messages):
-            tail_values = list(values or ())[index:]
-            tail_keys = list(keys or ())[index:] if keys else None
-            if ordered_values or ordered_keys:
-                await self.add_element_ordered(key, hint_result, tail_values, tail_keys, client_id=cid, **kwargs)
-            else:
-                await self.add_element(key, hint_result, tail_values, tail_keys, client_id=cid, **kwargs)
-        return hint_result
+        value_field.extend(value_messages)
+        key_field.extend(key_messages)
+        return await self._create_container_chunked(request, **kwargs)
 
-    async def create_vector(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def _create_container_chunked(self, request, **kwargs):
+        if request.HasField("ttl"):
+            for value in list(request.value_unordered) + list(request.value_ordered):
+                if request.type in (cache_pb2.MAP, cache_pb2.ORDERED_MAP, cache_pb2.ORDERED_SET):
+                    value.ttl = request.ttl
+        chunks = plan(request, creation=True)
+        # Preflight continuation headers as well as the create headers.
+        for chunk, _ in chunks[1:]:
+            reserved = cache_pb2.KeyHint(week_hash=0xFFFFFFFF, strong_hash=0xFFFFFFFF)
+            check(continuation(chunk, reserved))
+        response = await self._unary("create_container", self.stub.createContainer, chunks[0][0], **kwargs)
+        hint = decode_hint(response) or KeyHintData.unspecified()
+        done, acknowledged = chunks[0][1], 1
+        rpc = self.stub.addElementToTail if request.type in (cache_pb2.LIST, cache_pb2.VECTOR, cache_pb2.QUEUE) else self.stub.addElement
+        for chunk, count in chunks[1:]:
+            try:
+                wire_hint = response.keyHint if response.HasField("keyHint") else None
+                result = await self._unary("create_container", rpc, continuation(chunk, wire_hint), **kwargs)
+                if request.type in (cache_pb2.LIST, cache_pb2.VECTOR, cache_pb2.QUEUE) and result.size == 0:
+                    raise HurriCacheError("server rejected continuation chunk")
+            except Exception as error:
+                raise PartialOperationError(acknowledged, done, hint) from error
+            acknowledged += 1
+            done += count
+        return hint
+
+    async def create_vector(self, key: KeyLike, hint=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(key, hint, cache_pb2.VECTOR, values, None, ttl, client_id, **kwargs)
 
-    async def create_list(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_list(self, key: KeyLike, hint=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(key, hint, cache_pb2.LIST, values, None, ttl, client_id, **kwargs)
 
-    async def create_queue(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_queue(self, key: KeyLike, hint=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(key, hint, cache_pb2.QUEUE, values, None, ttl, client_id, **kwargs)
 
-    async def create_set(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_set(self, key: KeyLike, hint=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(key, hint, cache_pb2.SET, values, None, ttl, client_id, **kwargs)
 
-    async def create_map(self, key: KeyLike, hint=None, keys=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_map(self, key: KeyLike, hint=None, keys=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(key, hint, cache_pb2.MAP, values, keys, ttl, client_id, **kwargs)
 
-    async def create_ordered_set(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_ordered_set(self, key: KeyLike, hint=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(
             key, hint, cache_pb2.ORDERED_SET, values, None, ttl, client_id, ordered_values=True, **kwargs
         )
 
-    async def create_ordered_map(self, key: KeyLike, hint=None, keys=None, values=None, ttl=0, client_id=None, **kwargs):
+    async def create_ordered_map(self, key: KeyLike, hint=None, keys=None, values=None, ttl=None, client_id=None, **kwargs):
         return await self._create_container(
             key, hint, cache_pb2.ORDERED_MAP, values, keys, ttl, client_id, ordered_keys=True, **kwargs
         )
@@ -323,7 +350,7 @@ class AsyncHurriCacheClient:
     def _container_get(self, key: KeyLike, element_key: KeyLike, hint, element_hint, client_id):
         cid = self._client_id(client_id)
         return cache_pb2.ContainerGetRequest(
-            key=self._key(key, hint, cid), element_key=create_key(element_key, element_hint, cid)
+            key=self._key(key, hint, cid), element_key=create_key(element_key, element_hint, cid, compress=False)
         )
 
     async def get_value_in_container(
@@ -391,12 +418,12 @@ class AsyncHurriCacheClient:
         )
 
     async def update_value_in_container(
-        self, key: KeyLike, element_key: KeyLike, value=b"", hint=None, element_hint=None, ttl=0, client_id=None, **kwargs
+        self, key: KeyLike, element_key: KeyLike, value=b"", hint=None, element_hint=None, ttl=None, client_id=None, **kwargs
     ):
         cid = self._client_id(client_id)
         request = cache_pb2.UpdateContainerRequest(
             key=self._key(key, hint, cid),
-            element_key=create_key(element_key, element_hint, cid),
+            element_key=create_key(element_key, element_hint, cid, compress=False),
             value=create_value(value, ttl, cid),
         )
         return await self._unary(
@@ -434,9 +461,7 @@ class AsyncHurriCacheClient:
             keys=[create_key(k, client_id=cid) for k in (keys or ())],
         )
         request.type = int(type)
-        return await self._unary(
-            "remove_from_container_by_key_value", self.stub.removeFromContainerByKeyValue, request, lambda r: r.size, **kwargs
-        )
+        return await self._send_add_chunks("remove_from_container_by_key_value", self.stub.removeFromContainerByKeyValue, request, **kwargs)
 
     async def remove_in_container(
         self, key: KeyLike, element_key: KeyLike, hint=None, element_hint=None, client_id=None, **kwargs
@@ -445,50 +470,30 @@ class AsyncHurriCacheClient:
         return await self._unary("remove_in_container", self.stub.removeInContainer, request, lambda r: r.size, **kwargs)
 
     async def _send_add_chunks(self, name, rpc, request, **kwargs):
-        if request.key_unordered:
-            pairs = list(zip(request.key_unordered, request.value_unordered, strict=True))
-            pair_fields = ("key_unordered", "value_unordered")
-        elif request.key_ordered:
-            paired_values = request.value_unordered or request.value_ordered
-            pairs = list(zip(request.key_ordered, paired_values, strict=True))
-            pair_fields = ("key_ordered", "value_unordered" if request.value_unordered else "value_ordered")
-        elif request.value_ordered:
-            pairs = [(None, item) for item in request.value_ordered]
-            pair_fields = ("", "value_ordered")
-        else:
-            pairs = [(None, item) for item in request.value_unordered]
-            pair_fields = ("", "value_unordered")
-        if not pairs:
-            response = await self._unary(name, rpc, request, **kwargs)
-            return response.size if hasattr(response, "size") else response.value
-        offset = 0
-        total = 0
-        all_ok = True
-        size_response = False
-        while offset < len(pairs):
-            chunk = cache_pb2.AddToRequest(key=request.key)
-            for optional in ("type", "ttl", "pos"):
-                if request.HasField(optional):
-                    setattr(chunk, optional, getattr(request, optional))
-            consumed = 0
-            for key_item, value_item in pairs[offset:]:
-                extra = value_item.ByteSize() + (key_item.ByteSize() if key_item is not None else 0)
-                if chunk.ByteSize() + extra > MAX_RPC_SIZE:
-                    if consumed == 0:
-                        raise ValueError("one element exceeds the maximum HurriCache request size")
-                    break
-                getattr(chunk, pair_fields[1]).append(value_item)
-                if key_item is not None:
-                    getattr(chunk, pair_fields[0]).append(key_item)
-                consumed += 1
-            response = await self._unary(name, rpc, chunk, **kwargs)
-            if hasattr(response, "size"):
-                size_response = True
-                total += response.size
-            else:
-                all_ok = all_ok and response.value
-            offset += consumed
-        return total if size_response else all_ok
+        boolean = kwargs.pop("_boolean", False) or name in {
+            "add_element_to_head", "add_element_to_tail", "add_element_to_position_by_value"
+        }
+        chunks = plan(request)
+        total, done, acknowledged = 0, 0, 0
+        for chunk, count in chunks:
+            if count == 0:
+                continue
+            try:
+                response = await self._unary(name, rpc, chunk, **kwargs)
+            except Exception as error:
+                if acknowledged:
+                    raise PartialOperationError(acknowledged, done, True if boolean else total) from error
+                raise
+            if total + response.size > 0xFFFFFFFF:
+                raise PartialOperationError(acknowledged + 1, done + count, True if boolean else total) from OverflowError("count exceeds uint32")
+            total += response.size
+            if boolean and response.size == 0:
+                if acknowledged:
+                    raise PartialOperationError(acknowledged, done, False) from HurriCacheError("server rejected chunk")
+                return False
+            acknowledged += 1
+            done += count
+        return True if boolean else total
 
     async def _add_unordered(self, name, rpc, key, hint, values, keys, ttl, client_id, pos=None, **kwargs):
         cid = self._client_id(client_id)
@@ -497,10 +502,12 @@ class AsyncHurriCacheClient:
         request = cache_pb2.AddToRequest(
             key=self._key(key, hint, cid),
             value_unordered=[create_value(v, ttl, cid) for v in (values or ())],
-            key_unordered=[create_key(k, client_id=cid) for k in (keys or ())],
+            key_unordered=[create_key(k, client_id=cid, compress=False) for k in (keys or ())],
         )
+        if keys is not None:
+            request.type = cache_pb2.MAP
         if pos is not None:
-            request.pos = pos
+            request.pos = pos if pos >= 0 else 0xFFFFFFFF
         return await self._send_add_chunks(name, rpc, request, **kwargs)
 
     async def add_element_to_tail(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
@@ -521,7 +528,7 @@ class AsyncHurriCacheClient:
     add_element_hash_map = add_element
 
     async def add_element_unordered(
-        self, key: KeyLike, hint=None, values=None, keys=None, pos=0, ttl=0, client_id=None, **kwargs
+        self, key: KeyLike, hint=None, values=None, keys=None, pos=-1, ttl=0, client_id=None, **kwargs
     ):
         return await self._add_unordered(
             "add_element_unordered", self.stub.addElement, key, hint, values, keys, ttl, client_id, pos, **kwargs
@@ -532,13 +539,13 @@ class AsyncHurriCacheClient:
     ):
         cid = self._client_id(client_id)
         values = values or ()
-        keys = keys or ()
         request = cache_pb2.AddToRequest(key=self._key(key, hint, cid), pos=pos)
-        if keys:
+        if keys is not None:
+            request.type = cache_pb2.ORDERED_MAP
             if len(keys) != len(values):
                 raise ValueError("ordered-map keys and values must have equal lengths")
             request.key_ordered.extend(create_ordered_key(k, client_id=cid) for k in keys)
-            request.value_unordered.extend(create_value(v, ttl, cid) for v in values)
+            request.value_unordered.extend(create_value(v, ttl, cid, compress=True) for v in values)
         else:
             request.value_ordered.extend(create_ordered_value(v, ttl=ttl, client_id=cid) for v in values)
         return await self._send_add_chunks("add_element_ordered", self.stub.addElement, request, **kwargs)
@@ -554,9 +561,7 @@ class AsyncHurriCacheClient:
             pos=create_value(pos, client_id=cid),
             value=[create_value(v, client_id=cid) for v in (values or ())],
         )
-        return await self._unary(
-            "add_element_to_position_by_value", self.stub.addElementToPositionByValue, request, lambda r: r.value, **kwargs
-        )
+        return await self._send_add_chunks("add_element_to_position_by_value", self.stub.addElementToPositionByValue, request, **kwargs)
 
     async def add_element_to_position_before(self, key: KeyLike, hint=None, pivot=b"", values=None, client_id=None, **kwargs):
         return await self.add_element_to_position_by_value(
@@ -574,7 +579,7 @@ class AsyncHurriCacheClient:
         cid = self._client_id(client_id)
         request = cache_pb2.AtomicCreate(key=self._key(key, hint, cid), val=cache_pb2.AtomicValue(val=value))
         if ttl > 0:
-            request.ttl = int(time.time() * 1000) + ttl
+            request.ttl = absolute_ttl(ttl)
         request.lock_info.type = cache_pb2.NO_LOCK
         request.lock_info.lockedBy = cid
         return await self._unary(name, rpc, request, decoder, **kwargs)
@@ -587,38 +592,38 @@ class AsyncHurriCacheClient:
             "atomic_load_and_delete", self.stub.atomicLoadAndDelete, self._get(key, hint, client_id), lambda r: r.val, **kwargs
         )
 
-    async def atomic_create(self, key: KeyLike, hint=None, value=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_create(self, key: KeyLike, hint=None, value=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic(
             "atomic_create", self.stub.atomicCreate, key, hint, value, ttl, client_id,
             lambda r: decode_hint(r) or KeyHintData.unspecified(), **kwargs
         )
 
-    async def atomic_store(self, key: KeyLike, hint=None, value=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_store(self, key: KeyLike, hint=None, value=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic(
             "atomic_store", self.stub.atomicStore, key, hint, value, ttl, client_id,
             lambda r: decode_hint(r) or KeyHintData.unspecified(), **kwargs
         )
 
-    async def atomic_exchange(self, key: KeyLike, hint=None, value=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_exchange(self, key: KeyLike, hint=None, value=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_exchange", self.stub.atomicExchange, key, hint, value, ttl, client_id, **kwargs)
 
-    async def atomic_add(self, key: KeyLike, hint=None, delta=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_add(self, key: KeyLike, hint=None, delta=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_add", self.stub.atomicAdd, key, hint, delta, ttl, client_id, **kwargs)
 
-    async def atomic_sub(self, key: KeyLike, hint=None, delta=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_sub(self, key: KeyLike, hint=None, delta=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_sub", self.stub.atomicSub, key, hint, delta, ttl, client_id, **kwargs)
 
-    async def atomic_or(self, key: KeyLike, hint=None, mask=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_or(self, key: KeyLike, hint=None, mask=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_or", self.stub.atomicOr, key, hint, mask, ttl, client_id, **kwargs)
 
-    async def atomic_and(self, key: KeyLike, hint=None, mask=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_and(self, key: KeyLike, hint=None, mask=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_and", self.stub.atomicAnd, key, hint, mask, ttl, client_id, **kwargs)
 
-    async def atomic_xor(self, key: KeyLike, hint=None, mask=0, ttl=0, client_id=None, **kwargs):
+    async def atomic_xor(self, key: KeyLike, hint=None, mask=0, ttl=None, client_id=None, **kwargs):
         return await self._atomic("atomic_xor", self.stub.atomicXor, key, hint, mask, ttl, client_id, **kwargs)
 
     async def atomic_compare_and_set(
-        self, key: KeyLike, hint=None, expected_value=0, new_value=0, ttl=0, client_id=None, **kwargs
+        self, key: KeyLike, hint=None, expected_value=0, new_value=0, ttl=None, client_id=None, **kwargs
     ) -> CasResult:
         cid = self._client_id(client_id)
         request = cache_pb2.AtomicCas(
@@ -627,7 +632,7 @@ class AsyncHurriCacheClient:
             toSet=cache_pb2.AtomicValue(val=new_value),
         )
         if ttl > 0:
-            request.ttl = int(time.time() * 1000) + ttl
+            request.ttl = absolute_ttl(ttl)
         request.lock_info.type = cache_pb2.NO_LOCK
         request.lock_info.lockedBy = cid
         return await self._unary(
@@ -639,3 +644,146 @@ class AsyncHurriCacheClient:
             ),
             **kwargs,
         )
+
+    async def add_element_to_position(self, key, hint=None, values=None, pos=0, client_id=None, **kwargs):
+        return await self.add_element_unordered(key, hint, values, pos=pos, client_id=client_id, **kwargs)
+
+    async def add_element_with_weight(self, key, hint=None, values=None, client_id=None, **kwargs):
+        return await self.add_element_ordered(key, hint, values, client_id=client_id, **kwargs)
+
+    async def add_element_ordered_set(self, key, hint=None, values=None, client_id=None, **kwargs):
+        return await self.add_element_ordered(key, hint, values, client_id=client_id, _boolean=True, **kwargs)
+
+    async def add_element_ordered_map(self, key, hint=None, keys=None, values=None, client_id=None, **kwargs):
+        if len(keys or ()) != len(values or ()):
+            raise ValueError("map keys and values must have equal lengths")
+        request = cache_pb2.AddToRequest(key=self._key(key, hint, client_id), type=cache_pb2.ORDERED_MAP,
+            key_ordered=[create_ordered_key(k, client_id=self._client_id(client_id)) for k in (keys or ())],
+            value_unordered=[create_value(v, client_id=self._client_id(client_id), compress=True) for v in (values or ())])
+        return await self._send_add_chunks("add_element_ordered_map", self.stub.addElement, request, **kwargs)
+
+    async def stream_element_in_range_unordered(self, key, hint=None, type=cache_pb2.LIST, pos=0, end=0, client_id=None, **kwargs):
+        return await self.get_element_in_range(key, hint, pos=pos, end=end, type=type, client_id=client_id, **kwargs)
+
+    async def stream_element_in_range_ordered_set(self, key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs):
+        return await self.get_element_in_range(key, hint, pos=pos, end=end, type=cache_pb2.ORDERED_SET, reverse=reverse, client_id=client_id, **kwargs)
+
+    async def stream_element_in_range_ordered(self, key, hint=None, pos=0, end=0, client_id=None, **kwargs):
+        return await self.stream_element_in_range_ordered_set(key, hint, pos, end, client_id=client_id, **kwargs)
+
+    update_key_value = update_value
+    get_container_value = get_value_in_container
+    get_and_remove_container_value = get_and_delete_value_in_container
+    update_container_value = update_value_in_container
+    remove_container_key = remove_in_container
+    remove_from_container = remove_from_container_by_key_value
+
+    async def stream_list(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return []
+        if not isinstance(result, list) or not all(type(item) is Payload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_vector(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return []
+        if not isinstance(result, list) or not all(type(item) is Payload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_queue(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return []
+        if not isinstance(result, list) or not all(type(item) is Payload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_set(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return []
+        if not isinstance(result, list) or not all(type(item) is Payload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_map(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return {}
+        if not isinstance(result, dict) or not all(type(item) is Payload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_ordered_set(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return []
+        if not isinstance(result, list) or not all(type(item) is OrderedPayload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def stream_ordered_map(self, key, hint=None, client_id=None, **kwargs):
+        result = await self.get_container(key, hint, client_id, **kwargs)
+        if not result:
+            return {}
+        if not isinstance(result, dict) or not all(type(item) is OrderedPayload for item in result):
+            raise ValueError("unexpected collection representation")
+        return result
+
+    async def add_element_to_tail_count(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+        return await self._add_unordered(
+            "add_element_to_tail_count", self.stub.addElementToTail, key, hint, values, None, ttl, client_id, **kwargs
+        )
+
+
+    async def add_element_to_head_count(self, key: KeyLike, hint=None, values=None, ttl=0, client_id=None, **kwargs):
+        return await self._add_unordered(
+            "add_element_to_head_count", self.stub.addElementToHead, key, hint, values, None, ttl, client_id, **kwargs
+        )
+
+
+    async def add_element_to_position_by_value_count(
+        self, key: KeyLike, hint=None, pos=b"", is_before=True, values=None, ttl=0, client_id=None, **kwargs
+    ):
+        cid = self._client_id(client_id)
+        request = cache_pb2.AddToValRequest(
+            key=self._key(key, hint, cid),
+            ttl=ttl,
+            isBefore=is_before,
+            pos=create_value(pos, client_id=cid),
+            value=[create_value(v, client_id=cid) for v in (values or ())],
+        )
+        return await self._send_add_chunks("add_element_to_position_by_value_count", self.stub.addElementToPositionByValue, request, **kwargs)
+
+
+    async def add_element_to_position_before_count(self, key: KeyLike, hint=None, pivot=b"", values=None, client_id=None, **kwargs):
+        return await self.add_element_to_position_by_value_count(
+            key, hint, pivot, True, values, client_id=client_id, **kwargs
+        )
+
+
+    async def add_element_to_position_after_count(self, key: KeyLike, hint=None, pivot=b"", values=None, client_id=None, **kwargs):
+        return await self.add_element_to_position_by_value_count(
+            key, hint, pivot, False, values, client_id=client_id, **kwargs
+        )
+
+
+    async def get_element_with_weight(self, key, hint=None, pos=0, client_id=None, **kwargs):
+        request = cache_pb2.KeyPositionRequest(key=self._key(key, hint, client_id), pos=pos)
+        return await self._value_rpc("get_element_with_weight", self.stub.getElementAtPosition, request, **kwargs)
+
+    async def get_and_remove_element_with_weight(self, key, hint=None, pos=0, client_id=None, **kwargs):
+        request = cache_pb2.KeyPositionRequest(key=self._key(key, hint, client_id), pos=pos)
+        return await self._value_rpc("get_and_remove_element_with_weight", self.stub.getAndRemoveElementAtPosition, request, **kwargs)
+
+    async def stream_element_in_range_ordered_map(self, key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs):
+        result = await self.get_element_in_range(key, hint, pos, end, cache_pb2.ORDERED_MAP, reverse, client_id, **kwargs)
+        if not result:
+            return {}
+        if not isinstance(result, dict) or not all(type(item) is OrderedPayload for item in result):
+            raise ValueError("unexpected range representation")
+        return result

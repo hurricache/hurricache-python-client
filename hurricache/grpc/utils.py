@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import time
+import gzip
+import io
+import zlib
 from collections.abc import Iterable
 from typing import TypeVar
 
-import lz4.block
-
 from hurricache.grpc import cache_pb2
 from hurricache.grpc.models import KeyHintData, OrderedPayload, Payload
+from hurricache.grpc.operation import absolute_ttl, threshold
 
 COMPRESSION_THRESHOLD = 1024
 MAX_RPC_SIZE = 4 * 1024 * 1024 - 512 * 1024
+MAX_DECODED_BYTES = 64 * 1024 * 1024
 KeyLike = bytes | str
 ValueLike = bytes | Payload
 T = TypeVar("T")
@@ -36,15 +38,15 @@ def _set_hint(target: object, hint: KeyHintData | None) -> None:
         key_hint.strong_hash = hint.strong_hash & 0xFFFFFFFF
 
 
-def _compressed(data: bytes) -> tuple[bytes, int | None]:
-    if len(data) <= COMPRESSION_THRESHOLD:
+def _compressed(data: bytes, compress: bool = True) -> tuple[bytes, int | None]:
+    if not compress or len(data) <= threshold.get():
         return data, None
-    return lz4.block.compress(data, store_size=False), len(data)
+    return gzip.compress(data, mtime=0), len(data)
 
 
-def create_key(key: KeyLike, hint: KeyHintData | None = None, client_id: int = 0) -> cache_pb2.Key:
+def create_key(key: KeyLike, hint: KeyHintData | None = None, client_id: int = 0, *, compress: bool = True) -> cache_pb2.Key:
     raw = as_bytes(key, name="key")
-    body, raw_size = _compressed(raw)
+    body, raw_size = _compressed(raw, compress)
     result = cache_pb2.Key(payload=cache_pb2.KeyBinaryPayload(payload=body, size=len(body)))
     result.clientId = client_id
     if raw_size is not None:
@@ -54,15 +56,15 @@ def create_key(key: KeyLike, hint: KeyHintData | None = None, client_id: int = 0
     return result
 
 
-def create_value(value: bytes | bytearray | memoryview | Payload, ttl: int = 0, client_id: int = 0) -> cache_pb2.Value:
+def create_value(value: bytes | bytearray | memoryview | Payload, ttl: int = 0, client_id: int = 0, *, compress: bool = False) -> cache_pb2.Value:
     raw = value.value if isinstance(value, Payload) else as_bytes(value)
-    body, raw_size = _compressed(raw)
+    body, raw_size = _compressed(raw, compress)
     result = cache_pb2.Value(value=cache_pb2.BinaryPayload(payload=body, size=len(body)))
     if raw_size is not None:
         result.compressionInfo.enabled = True
         result.compressionInfo.rawSize = raw_size
     if ttl > 0:
-        result.ttl = int(time.time() * 1000) + ttl
+        result.ttl = absolute_ttl(ttl)
     # Java always attaches lock ownership, including client id zero.
     result.lock_info.type = cache_pb2.NO_LOCK
     result.lock_info.lockedBy = client_id
@@ -86,7 +88,7 @@ def create_ordered_value(
         result.compressionInfo.enabled = True
         result.compressionInfo.rawSize = raw_size
     if ttl > 0:
-        result.ttl = int(time.time() * 1000) + ttl
+        result.ttl = absolute_ttl(ttl)
     result.lock_info.type = cache_pb2.NO_LOCK
     result.lock_info.lockedBy = client_id
     return result
@@ -116,22 +118,34 @@ def build_get_request(key: KeyLike, hint: KeyHintData | None = None, client_id: 
     return cache_pb2.GetRequest(key=create_key(key, hint, client_id))
 
 
+def _decode(payload, info) -> bytes:
+    data = bytes(payload.payload)
+    if len(data) != payload.size:
+        raise ValueError("payload size metadata does not match bytes")
+    if not info.enabled:
+        if len(data) > MAX_DECODED_BYTES:
+            raise ValueError("payload exceeds decoded-size limit")
+        return data
+    if not info.HasField("rawSize") or info.rawSize <= 0:
+        raise ValueError("compressed payload lacks a positive rawSize")
+    if info.rawSize > MAX_DECODED_BYTES:
+        raise ValueError("payload exceeds decoded-size limit")
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+            decoded = stream.read(info.rawSize + 1)
+    except (OSError, EOFError, zlib.error) as error:
+        raise ValueError("invalid GZIP payload") from error
+    if len(decoded) != info.rawSize:
+        raise ValueError("decoded size does not match rawSize")
+    return decoded
+
+
 def decode_value(value: cache_pb2.Value | cache_pb2.OrderedValue) -> bytes:
-    data = bytes(value.value.payload)
-    if value.HasField("compressionInfo") and value.compressionInfo.enabled:
-        if not value.compressionInfo.HasField("rawSize"):
-            raise ValueError("compressed payload is missing rawSize")
-        return lz4.block.decompress(data, uncompressed_size=value.compressionInfo.rawSize)
-    return data
+    return _decode(value.value, value.compressionInfo)
 
 
 def decode_key(key: cache_pb2.Key | cache_pb2.OrderedKey) -> bytes:
-    data = bytes(key.payload.payload)
-    if key.HasField("compressionInfo") and key.compressionInfo.enabled:
-        if not key.compressionInfo.HasField("rawSize"):
-            raise ValueError("compressed key is missing rawSize")
-        return lz4.block.decompress(data, uncompressed_size=key.compressionInfo.rawSize)
-    return data
+    return _decode(key.payload, key.compressionInfo)
 
 
 def decode_hint(message: object, field: str = "keyHint") -> KeyHintData | None:

@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 dependencies = [
     "grpcio>=1.60,<2",
     "protobuf>=4.25,<8",
-    "lz4>=4.3,<5",
     "tenacity>=8.2,<10",
 ]
 

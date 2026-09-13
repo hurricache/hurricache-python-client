@@ -12,6 +12,7 @@ from hurricache.grpc.exceptions import (
     HurriCacheRpcError,
     InvalidArgumentError,
     KeyNotFoundError,
+    PartialOperationError,
     PermissionDeniedError,
     UnavailableError,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "HurriCacheRpcError",
     "KeyNotFoundError",
     "PermissionDeniedError",
+    "PartialOperationError",
     "InvalidArgumentError",
     "DeadlineExceededError",
     "UnavailableError",
