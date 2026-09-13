@@ -50,6 +50,10 @@ class CacheService(cache_pb2_grpc.HurriCacheGrpcServiceServicer):
         self.container_batches.append(request)
         return cache_pb2.IntResponse(size=len(request.value_unordered) + len(request.value_ordered))
 
+    def addElementToTail(self, request, context):
+        self.container_batches.append(request)
+        return cache_pb2.IntResponse(size=len(request.value_unordered))
+
 
 @pytest.fixture()
 def cache_server():
@@ -75,7 +79,7 @@ def test_sync_client_deadline_compression_models_and_lock_units(cache_server) ->
         assert client.get_value("key") == b"x" * 2048
         assert client.get_container("items") == [Payload(b"a"), Payload(b"b")]
         assert client.lock_object("key", lock_type=LockType.WRITE_LOCK, lock_duration=1.25) is LockStatus.CANT_LOCK
-        assert service.lock_requests[0].lockDuration == 1250
+        assert int(time.time()) <= service.lock_requests[0].lockDuration <= int(time.time()) + 2
         assert 0 <= client.get_ttl("key") <= 500
         with pytest.raises(DeadlineExceededError):
             client.get_size("slow", timeout=0.001)
@@ -99,7 +103,7 @@ async def test_async_client_uses_aio_and_decodes_stream(cache_server) -> None:
         assert await client.lock_object("key", lock_duration=2) is LockStatus.CANT_LOCK
         with pytest.raises(DeadlineExceededError):
             await client.get_size("slow", timeout=0.001)
-    assert service.lock_requests[-1].lockDuration == 2000
+    assert int(time.time()) + 1 <= service.lock_requests[-1].lockDuration <= int(time.time()) + 2
 
 
 def test_large_initial_container_is_split_into_bounded_requests(cache_server) -> None:

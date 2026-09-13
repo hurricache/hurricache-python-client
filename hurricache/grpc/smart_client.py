@@ -20,6 +20,7 @@ from hurricache.grpc.async_client import AsyncHurriCacheClient
 from hurricache.grpc.client import HurriCacheClient
 from hurricache.grpc.exceptions import FailedPreconditionError, UnavailableError
 from hurricache.grpc.models import KeyHintData, Mode
+from hurricache.grpc.operation import Defaults, configure, operation, remaining
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +31,7 @@ class _Topology:
 
 
 _EMPTY_TOPOLOGY = _Topology(0, {}, frozenset())
-_WRITE_PREFIXES = ("create_", "add_", "remove", "update_", "set_", "lock_", "unlock_", "get_and_")
+_WRITE_OPERATIONS = frozenset(['add_element', 'add_element_hash_map', 'add_element_ordered', 'add_element_ordered_map', 'add_element_ordered_set', 'add_element_to_head', 'add_element_to_head_count', 'add_element_to_position', 'add_element_to_position_after', 'add_element_to_position_after_count', 'add_element_to_position_before', 'add_element_to_position_before_count', 'add_element_to_position_by_value', 'add_element_to_position_by_value_count', 'add_element_to_tail', 'add_element_to_tail_count', 'add_element_unordered', 'add_element_with_weight', 'atomic_add', 'atomic_and', 'atomic_compare_and_set', 'atomic_create', 'atomic_exchange', 'atomic_load_and_delete', 'atomic_or', 'atomic_store', 'atomic_sub', 'atomic_xor', 'get_and_delete_value', 'get_and_delete_value_in_container', 'get_and_remove_container_value', 'get_and_remove_element_at_position', 'get_and_remove_front', 'get_and_remove_tail', 'lock_object', 'remove_container_key', 'remove_element_at_position', 'remove_from_container', 'remove_from_container_by_key_value', 'remove_head', 'remove_in_container', 'remove_tail', 'set_ttl', 'unlock_object', 'update_container_value', 'update_value_in_container'])
 
 
 def _coordinator_addresses(value: str | Sequence[str], port: int | None) -> tuple[str, ...]:
@@ -58,10 +59,29 @@ def _topology_from(response: coordinator_pb2.RoutingInfoData) -> _Topology:
     routes: dict[tuple[int, int], str] = {}
     targets: set[str] = set()
     for peer in response.peerRouting:
+        if not peer.target or peer.role not in (coordinator_pb2.MASTER, coordinator_pb2.BACKUP):
+            raise ValueError("invalid peer target or role")
         targets.add(peer.target)
         for shard in peer.partitionIds:
+            if not 0 <= shard < response.max_shards:
+                raise ValueError("shard outside topology")
+            previous = routes.get((peer.role, shard))
+            if previous is not None and previous != peer.target:
+                raise ValueError("conflicting shard routes")
             routes[(peer.role, shard)] = peer.target
+    if not routes:
+        raise ValueError("empty topology")
     return _Topology(response.max_shards, routes, frozenset(targets))
+
+
+def _merge_topology(responses):
+    merged = coordinator_pb2.RoutingInfoData()
+    for response in responses:
+        if merged.max_shards and merged.max_shards != response.max_shards:
+            raise ValueError("inconsistent shard counts")
+        merged.max_shards = response.max_shards
+        merged.peerRouting.extend(response.peerRouting)
+    return _topology_from(merged)
 
 
 def _hint_from_call(method: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> KeyHintData | None:
@@ -74,12 +94,10 @@ def _hint_from_call(method: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
 
 
 def _is_write(name: str) -> bool:
-    if name.startswith("atomic_"):
-        return name not in {"atomic_load", "atomic_load_and_delete"}
-    return name.startswith(_WRITE_PREFIXES)
+    return name in _WRITE_OPERATIONS
 
 
-class HurriCacheSmartClient:
+class HurriCacheSmartClient(Defaults):
     """Synchronous smart client with coordinator failover and background refresh."""
 
     def __init__(
@@ -87,6 +105,8 @@ class HurriCacheSmartClient:
         coordinators: str | Sequence[str] = "localhost:50051",
         coordinator_port: int | None = None,
         *,
+        default_ttl: int = 0,
+        default_compression_threshold: int = 1024,
         default_client_id: int = 0,
         default_timeout: float = 1.0,
         readiness_timeout: float = 60.0,
@@ -94,6 +114,9 @@ class HurriCacheSmartClient:
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
     ) -> None:
+        configure(self, default_ttl, default_compression_threshold)
+        self._active = 0
+        self._retired: list[Any] = []
         self._coordinators = _coordinator_addresses(coordinators, coordinator_port)
         self._default_client_id = default_client_id
         self._default_timeout = default_timeout
@@ -171,9 +194,7 @@ class HurriCacheSmartClient:
                 stream = stub.provideGlobalRoutingInfo(
                     coordinator_pb2.Void(), timeout=max(self._default_timeout, 0.1)
                 )
-                response = next(iter(stream))
-                stream.cancel()
-                self._apply_topology(_topology_from(response))
+                self._apply_topology(_merge_topology(stream))
 
     def _refresh_loop(self) -> None:
         while not self._stop.is_set():
@@ -184,10 +205,12 @@ class HurriCacheSmartClient:
             self._stop.wait(self._refresh_interval)
 
     def _apply_topology(self, topology: _Topology) -> None:
+        if self._closed:
+            return
         with self._lock:
             removed = set(self._clients) - topology.targets
             for target in removed:
-                self._clients.pop(target).close()
+                self._retired.append(self._clients.pop(target))
             for target in topology.targets:
                 if target not in self._clients:
                     host, port = _split_target(target)
@@ -196,10 +219,17 @@ class HurriCacheSmartClient:
                         port,
                         default_client_id=self._default_client_id,
                         default_timeout=self._default_timeout,
+                        default_ttl=self._default_ttl,
+                        default_compression_threshold=self._default_compression_threshold,
                         credentials=self._credentials,
                     )
             self._topology = topology
             self._ready.set()
+
+            if self._active == 0:
+                retired, self._retired = self._retired, []
+                for client in retired:
+                    client.close()
 
     def _shard(self, topology: _Topology, hint: KeyHintData | None) -> int:
         if hint is None or hint.week_hash is None:
@@ -221,28 +251,55 @@ class HurriCacheSmartClient:
             ordered = [master, backup]
         return [client for client in ordered if client is not None]
 
-    def _execute(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        self.wait_until_ready()
-        topology = self.topology
-        method_type = getattr(HurriCacheClient, name)
-        hint = _hint_from_call(method_type, (None, *args), kwargs)
-        mode = self._mode_override.get() or (Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode)
-        endpoints = self._endpoints(topology, self._shard(topology, hint), mode)
-        if not endpoints:
-            raise UnavailableError("no healthy endpoints are available for the selected shard")
-        last_error: Exception | None = None
-        for endpoint in endpoints:
+    def _execute(self, name, args, kwargs):
+        with operation(self, kwargs.get("timeout", self._default_timeout)):
+            self.wait_until_ready(remaining(self._readiness_timeout))
+            with self._lock:
+                self._active += 1
+                topology = self._topology
+                clients = dict(self._clients)
             try:
-                return getattr(endpoint, name)(*args, **kwargs)
-            except FailedPreconditionError as error:
-                if error.route and error.route in self._clients:
-                    return getattr(self._clients[error.route], name)(*args, **kwargs)
-                raise
-            except UnavailableError as error:
-                last_error = error
-                continue
-        assert last_error is not None
-        raise last_error
+                method_type = getattr(HurriCacheClient, name)
+                hint = _hint_from_call(method_type, (None, *args), kwargs)
+                mode = self._mode_override.get()
+                if mode is None:
+                    mode = Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode
+                shard = self._shard(topology, hint)
+                master = clients.get(topology.routes.get((coordinator_pb2.MASTER, shard), ""))
+                backup = clients.get(topology.routes.get((coordinator_pb2.BACKUP, shard), ""))
+                if master is None or backup is None or master is backup:
+                    endpoints = [master or backup]
+                elif mode is Mode.MASTER:
+                    endpoints = [master]
+                elif mode is Mode.BACKUP:
+                    endpoints = [backup]
+                elif mode is Mode.LB_SMART and random.getrandbits(1):
+                    endpoints = [backup, master]
+                else:
+                    endpoints = [master, backup]
+                if endpoints[0] is None:
+                    raise UnavailableError("no endpoints for selected shard")
+                endpoint = endpoints[0]
+                try:
+                    return getattr(endpoint, name)(*args, **kwargs)
+                except FailedPreconditionError as error:
+                    other = clients.get(error.route)
+                    if other is None or other is endpoint:
+                        raise
+                except UnavailableError:
+                    if len(endpoints) < 2:
+                        raise
+                    other = endpoints[1]
+                # The second attempt is final. PartialOperationError never enters this path.
+                return getattr(other, name)(*args, **kwargs)
+            finally:
+                with self._lock:
+                    self._active -= 1
+                    retired = self._retired if self._active == 0 else []
+                    if retired:
+                        self._retired = []
+                for client in retired:
+                    client.close()
 
     def __getattr__(self, name: str):
         if not hasattr(HurriCacheClient, name) or name.startswith("_"):
@@ -254,6 +311,9 @@ class HurriCacheSmartClient:
         return routed
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._stop.set()
         if self._thread is not threading.current_thread():
             self._thread.join(timeout=min(3.0, self._refresh_interval + 0.1))
@@ -261,9 +321,11 @@ class HurriCacheSmartClient:
             if self._coordinator_channel is not None:
                 self._coordinator_channel.close()
                 self._coordinator_channel = None
-            for client in self._clients.values():
+            for client in list(self._clients.values()) + self._retired:
                 client.close()
             self._clients.clear()
+
+        self._retired = []
 
     def __enter__(self) -> "HurriCacheSmartClient":
         return self
@@ -272,7 +334,7 @@ class HurriCacheSmartClient:
         self.close()
 
 
-class AsyncHurriCacheSmartClient:
+class AsyncHurriCacheSmartClient(Defaults):
     """Asynchronous smart client with task-local mode overrides."""
 
     def __init__(
@@ -280,6 +342,8 @@ class AsyncHurriCacheSmartClient:
         coordinators: str | Sequence[str] = "localhost:50051",
         coordinator_port: int | None = None,
         *,
+        default_ttl: int = 0,
+        default_compression_threshold: int = 1024,
         default_client_id: int = 0,
         default_timeout: float = 1.0,
         readiness_timeout: float = 60.0,
@@ -287,6 +351,9 @@ class AsyncHurriCacheSmartClient:
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
     ) -> None:
+        configure(self, default_ttl, default_compression_threshold)
+        self._active = 0
+        self._retired: list[Any] = []
         self._coordinators = _coordinator_addresses(coordinators, coordinator_port)
         self._default_client_id = default_client_id
         self._default_timeout = default_timeout
@@ -327,6 +394,8 @@ class AsyncHurriCacheSmartClient:
             self._mode_override.reset(token)
 
     async def start(self) -> "AsyncHurriCacheSmartClient":
+        if self._closed:
+            raise RuntimeError("client is closed")
         if self._task is None:
             self._task = asyncio.create_task(self._refresh_loop(), name="hurricache-async-topology")
         return self
@@ -361,11 +430,8 @@ class AsyncHurriCacheSmartClient:
                 call = stub.provideGlobalRoutingInfo(
                     coordinator_pb2.Void(), timeout=max(self._default_timeout, 0.1)
                 )
-                response = await call.read()
-                if response is grpc.aio.EOF:
-                    raise UnavailableError("coordinator returned no topology")
-                call.cancel()
-                await self._apply_topology(_topology_from(response))
+                responses = [response async for response in call]
+                await self._apply_topology(_merge_topology(responses))
 
     async def _refresh_loop(self) -> None:
         while not self._closed:
@@ -381,9 +447,11 @@ class AsyncHurriCacheSmartClient:
                 raise
 
     async def _apply_topology(self, topology: _Topology) -> None:
+        if self._closed:
+            return
         removed = set(self._clients) - topology.targets
         for target in removed:
-            await self._clients.pop(target).close()
+            self._retired.append(self._clients.pop(target))
         for target in topology.targets:
             if target not in self._clients:
                 host, port = _split_target(target)
@@ -392,10 +460,17 @@ class AsyncHurriCacheSmartClient:
                     port,
                     default_client_id=self._default_client_id,
                     default_timeout=self._default_timeout,
+                        default_ttl=self._default_ttl,
+                        default_compression_threshold=self._default_compression_threshold,
                     credentials=self._credentials,
                 )
         self._topology = topology
         self._ready.set()
+
+        if self._active == 0:
+            retired, self._retired = self._retired, []
+            for client in retired:
+                await client.close()
 
     def _shard(self, hint: KeyHintData | None) -> int:
         if hint is None or hint.week_hash is None:
@@ -416,27 +491,53 @@ class AsyncHurriCacheSmartClient:
             ordered = [master, backup]
         return [client for client in ordered if client is not None]
 
-    async def _execute(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        await self.wait_until_ready()
-        method_type = getattr(AsyncHurriCacheClient, name)
-        hint = _hint_from_call(method_type, (None, *args), kwargs)
-        mode = self._mode_override.get() or (Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode)
-        endpoints = self._endpoints(self._shard(hint), mode)
-        if not endpoints:
-            raise UnavailableError("no healthy endpoints are available for the selected shard")
-        last_error: Exception | None = None
-        for endpoint in endpoints:
+    async def _execute(self, name, args, kwargs):
+        with operation(self, kwargs.get("timeout", self._default_timeout)):
+            await self.wait_until_ready(remaining(self._readiness_timeout))
+            self._active += 1
+            topology = self._topology
+            clients = dict(self._clients)
             try:
-                return await getattr(endpoint, name)(*args, **kwargs)
-            except FailedPreconditionError as error:
-                if error.route and error.route in self._clients:
-                    return await getattr(self._clients[error.route], name)(*args, **kwargs)
-                raise
-            except UnavailableError as error:
-                last_error = error
-                continue
-        assert last_error is not None
-        raise last_error
+                method_type = getattr(AsyncHurriCacheClient, name)
+                hint = _hint_from_call(method_type, (None, *args), kwargs)
+                mode = self._mode_override.get()
+                if mode is None:
+                    mode = Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode
+                shard = self._shard(hint)
+                master = clients.get(topology.routes.get((coordinator_pb2.MASTER, shard), ""))
+                backup = clients.get(topology.routes.get((coordinator_pb2.BACKUP, shard), ""))
+                if master is None or backup is None or master is backup:
+                    endpoints = [master or backup]
+                elif mode is Mode.MASTER:
+                    endpoints = [master]
+                elif mode is Mode.BACKUP:
+                    endpoints = [backup]
+                elif mode is Mode.LB_SMART and random.getrandbits(1):
+                    endpoints = [backup, master]
+                else:
+                    endpoints = [master, backup]
+                if endpoints[0] is None:
+                    raise UnavailableError("no endpoints for selected shard")
+                endpoint = endpoints[0]
+                try:
+                    return await getattr(endpoint, name)(*args, **kwargs)
+                except FailedPreconditionError as error:
+                    other = clients.get(error.route)
+                    if other is None or other is endpoint:
+                        raise
+                except UnavailableError:
+                    if len(endpoints) < 2:
+                        raise
+                    other = endpoints[1]
+                # The second attempt is final. PartialOperationError never enters this path.
+                return await getattr(other, name)(*args, **kwargs)
+            finally:
+                self._active -= 1
+                retired = self._retired if self._active == 0 else []
+                if retired:
+                    self._retired = []
+                for client in retired:
+                    await client.close()
 
     def __getattr__(self, name: str):
         if not hasattr(AsyncHurriCacheClient, name) or name.startswith("_"):
@@ -448,6 +549,8 @@ class AsyncHurriCacheSmartClient:
         return routed
 
     async def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
         if self._task is not None:
             self._task.cancel()
@@ -456,8 +559,10 @@ class AsyncHurriCacheSmartClient:
         if self._coordinator_channel is not None:
             await self._coordinator_channel.close()
             self._coordinator_channel = None
-        await asyncio.gather(*(client.close() for client in self._clients.values()), return_exceptions=True)
+        await asyncio.gather(*(client.close() for client in list(self._clients.values()) + self._retired), return_exceptions=True)
         self._clients.clear()
+
+        self._retired = []
 
     async def __aenter__(self) -> "AsyncHurriCacheSmartClient":
         await self.start()

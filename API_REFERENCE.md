@@ -82,7 +82,7 @@ lock_object(key, hint=None, lock_type=LockType.NO_LOCK,
 unlock_object(key, hint=None, client_id=None, **rpc_options) -> LockStatus
 ```
 
-`get_ttl` returns remaining milliseconds or `-1` when the server returns no TTL. `lock_duration` is seconds and is converted to wire milliseconds.
+`get_ttl` returns remaining milliseconds or `-1` when the server returns no TTL. `lock_duration` is seconds and is encoded as absolute Unix seconds.
 
 ## Container creation and streaming
 
@@ -192,3 +192,7 @@ All client exceptions inherit `HurriCacheError`:
 - `HurriCacheRpcError` (`method`, `code`, and `details` preserve generic gRPC context)
 
 Synchronous streaming failures and `grpc.aio` streaming failures use the same mapping. Native task cancellation remains cancellable through `grpc.aio`; callers should not suppress `asyncio.CancelledError`.
+
+## Updated parity APIs
+
+See [the count and weighted API additions](README.md#count-and-weighted-conveniences), [complete overload mappings](API_PARITY.md), and [GZIP field policy](README.md#compression-and-errors). All existing positional signatures and result models are retained.

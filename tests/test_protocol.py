@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import lz4.block
+import gzip
+
 import pytest
 
 from hurricache import KeyHintData, OrderedPayload, Payload
@@ -11,11 +12,11 @@ from hurricache.grpc.utils import create_key, create_ordered_key, create_value, 
 @pytest.mark.parametrize("length,compressed", [(1024, False), (1025, True)])
 def test_java_compression_boundary(length: int, compressed: bool) -> None:
     raw = b"abc" * (length // 3) + b"x" * (length % 3)
-    value = create_value(raw)
+    value = create_value(raw, compress=True)
     assert value.HasField("compressionInfo") is compressed
     assert decode_value(value) == raw
     if compressed:
-        assert lz4.block.decompress(value.value.payload, uncompressed_size=length) == raw
+        assert gzip.decompress(value.value.payload) == raw
         assert value.value.size == len(value.value.payload)
 
 

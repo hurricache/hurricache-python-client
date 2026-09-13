@@ -572,7 +572,7 @@ service HurriCacheGrpcService {
   // [MAP, ORDERED MAP]
   rpc getValueInContainer(ContainerGetRequest) returns (ValueResponse) {}
 
-  // [MAP, ORDERED MAP]
+  // [MAP, ORDERED MAP, SET]
   // Checks for key presence inside the container.
   rpc existKeyInContainer(ContainerGetRequest) returns (BoolResponse) {}
 
@@ -644,16 +644,16 @@ service HurriCacheGrpcService {
   // --------------------------------------------------------------------------
 
   // [LIST, VECTOR, QUEUE] Adds an element to the end (Push Back / Enqueue).
-  rpc addElementToTail(AddToRequest) returns (BoolResponse) {}
+  rpc addElementToTail(AddToRequest) returns (IntResponse) {}
 
   // [LIST, VECTOR] Adds an element to the beginning (Push Front). Forbidden for QUEUE.
-  rpc addElementToHead(AddToRequest) returns (BoolResponse) {}
+  rpc addElementToHead(AddToRequest) returns (IntResponse) {}
 
   // [LIST, VECTOR, SET, ORDERED_SET, ORDERED_MAP, MAP] Adds elements to sets (accounts for weight in ORDERED_SET).
   rpc addElement(AddToRequest) returns (IntResponse) {}
 
   // [LIST, VECTOR] Inserts an element relative to another value (Insert Before/After).
-  rpc addElementToPositionByValue(AddToValRequest) returns (BoolResponse) {}
+  rpc addElementToPositionByValue(AddToValRequest) returns (IntResponse) {}
 
 
   // --------------------------------------------------------------------------

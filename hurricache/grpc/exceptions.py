@@ -9,6 +9,16 @@ class HurriCacheError(Exception):
     """Base exception for HurriCache client errors."""
 
 
+class PartialOperationError(HurriCacheError):
+    """Acknowledged work before failure; the failed RPC may also have executed."""
+
+    def __init__(self, completed_chunks: int, completed_items: int, partial_result):
+        self.completed_chunks = completed_chunks
+        self.completed_items = completed_items
+        self.partial_result = partial_result
+        super().__init__(f"{completed_chunks} chunks ({completed_items} items) completed before failure")
+
+
 class KeyNotFoundError(HurriCacheError):
     """Raised when a key is not found or type is incorrect.
 
