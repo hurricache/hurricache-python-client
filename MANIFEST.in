@@ -9,3 +9,6 @@ include tools/generate_proto.py
 include tools/smoke_install.py
 include tools/parity.py
 include tools/interop.py
+include tools/verify_wheel.py
+include tools/java_interop.py
+include tools/CodecInterop.java

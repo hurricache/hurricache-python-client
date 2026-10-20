@@ -10,11 +10,15 @@ from google.protobuf.message_factory import GetMessageClass
 from hurricache import (
     AsyncHurriCacheClient,
     AsyncHurriCacheSmartClient,
+    CasResult,
     HurriCacheClient,
     HurriCacheSmartClient,
+    KeyHintData,
+    LockStatus,
     Mode,
     OrderedPayload,
     PartialOperationError,
+    Payload,
 )
 from hurricache.grpc import batching
 from hurricache.grpc import cache_pb2 as pb
@@ -167,9 +171,42 @@ async def test_every_operation(client_form, name):
     client, stub = client_form
     kwargs = operation_arguments(name)
     stub.shape = operation_shape(name)
-    await invoke(client, name, b"key", **kwargs)
+    result = await invoke(client, name, b"key", **kwargs)
     assert stub.calls, name
     assert all(0 < options["timeout"] <= 2 for _, _, options in stub.calls)
+    from hurricache.grpc.utils import decode_key
+
+    assert all(decode_key(req.key) == b"key" for _, req, _ in stub.calls)
+    rpc = pb.DESCRIPTOR.services_by_name["HurriCacheGrpcService"].methods_by_name[stub.calls[-1][0]]
+    if rpc.server_streaming:
+        expected = {
+            "list": [Payload(b"v")], "ordered_set": [OrderedPayload(b"v", 1)],
+            "map": {Payload(b"entry"): Payload(b"v")},
+            "ordered_map": {OrderedPayload(b"entry", 1): Payload(b"v")},
+        }
+        assert result == expected[stub.shape]
+    elif name.startswith("create_") or name in ("atomic_create", "atomic_store"):
+        assert result == KeyHintData(0xFFFFFFFF, 2)
+    elif name == "get_ttl":
+        assert result == -1
+    elif name in ("lock_object", "unlock_object"):
+        assert result == LockStatus.OK
+    elif name == "atomic_compare_and_set":
+        assert isinstance(result, CasResult)
+        assert result.hint == KeyHintData(0xFFFFFFFF, 2)
+    elif name.startswith("atomic_"):
+        assert type(result) is int and result == 0
+    elif rpc.output_type.name == "ValueResponse":
+        assert result == b"v"
+    elif name in ("update_value", "update_key_value", "update_value_in_container", "update_container_value"):
+        assert result == b"old"
+    elif rpc.output_type.name == "BoolResponse" or name in {
+        "add_element_to_head", "add_element_to_tail", "add_element_to_position_by_value",
+        "add_element_to_position_before", "add_element_to_position_after", "add_element_ordered_set",
+    }:
+        assert result is True
+    else:
+        assert type(result) is int and result == 1, (name, result)
 
 
 @pytest.mark.parametrize("length", [0, 7, 8, 9])

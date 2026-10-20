@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from hurricache.grpc import cache_pb2
 from hurricache.grpc.models import KeyHintData, OrderedPayload, Payload
-from hurricache.grpc.operation import absolute_ttl, threshold
+from hurricache.grpc.operation import absolute_ttl, payload_codec, threshold
 
 COMPRESSION_THRESHOLD = 1024
 MAX_RPC_SIZE = 4 * 1024 * 1024 - 512 * 1024
@@ -41,6 +41,10 @@ def _set_hint(target: object, hint: KeyHintData | None) -> None:
 def _compressed(data: bytes, compress: bool = True) -> tuple[bytes, int | None]:
     if not compress or len(data) <= threshold.get():
         return data, None
+    if payload_codec.get() == "lz4":
+        import lz4.block
+
+        return lz4.block.compress(data, store_size=False), len(data)
     return gzip.compress(data, mtime=0), len(data)
 
 
@@ -130,11 +134,19 @@ def _decode(payload, info) -> bytes:
         raise ValueError("compressed payload lacks a positive rawSize")
     if info.rawSize > MAX_DECODED_BYTES:
         raise ValueError("payload exceeds decoded-size limit")
-    try:
-        with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
-            decoded = stream.read(info.rawSize + 1)
-    except (OSError, EOFError, zlib.error) as error:
-        raise ValueError("invalid GZIP payload") from error
+    if payload_codec.get() == "lz4":
+        import lz4.block
+
+        try:
+            decoded = lz4.block.decompress(data, uncompressed_size=info.rawSize)
+        except lz4.block.LZ4BlockError as error:
+            raise ValueError("invalid LZ4 payload") from error
+    else:
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+                decoded = stream.read(info.rawSize + 1)
+        except (OSError, EOFError, zlib.error) as error:
+            raise ValueError("invalid GZIP payload") from error
     if len(decoded) != info.rawSize:
         raise ValueError("decoded size does not match rawSize")
     return decoded

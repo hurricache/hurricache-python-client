@@ -54,8 +54,10 @@ class AsyncHurriCacheClient(Defaults):
         *,
         default_ttl: int = 0,
         default_compression_threshold: int = 1024,
+        payload_compression: str = "gzip",
+        zero_client_id_uses_default: bool = True,
     ) -> None:
-        configure(self, default_ttl, default_compression_threshold)
+        configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._host = host
         self._port = port
         self._default_client_id = default_client_id
@@ -69,10 +71,13 @@ class AsyncHurriCacheClient(Defaults):
     def channel(self) -> grpc.aio.Channel:
         if self._channel is None:
             target = f"{self._host}:{self._port}"
+            options = [("grpc.max_receive_message_length", 64 * 1024 * 1024)]
             if self._credentials is None:
-                self._channel = grpc.aio.insecure_channel(target, compression=self._compression)
+                self._channel = grpc.aio.insecure_channel(target, options=options, compression=self._compression)
             else:
-                self._channel = grpc.aio.secure_channel(target, self._credentials, compression=self._compression)
+                self._channel = grpc.aio.secure_channel(
+                    target, self._credentials, options=options, compression=self._compression
+                )
             self._stub = cache_pb2_grpc.HurriCacheGrpcServiceStub(self._channel)
         return self._channel
 
@@ -84,7 +89,9 @@ class AsyncHurriCacheClient(Defaults):
         return self._stub
 
     def _client_id(self, client_id: int | None) -> int:
-        return self._default_client_id if client_id in (None, 0) else client_id
+        if client_id is None or (client_id == 0 and self._zero_client_id_uses_default):
+            return self._default_client_id
+        return client_id
 
     def _key(self, key: KeyLike, hint: KeyHintData | None, client_id: int | None) -> cache_pb2.Key:
         return create_key(key, hint, self._client_id(client_id))
@@ -444,9 +451,11 @@ class AsyncHurriCacheClient(Defaults):
         return await self._bool_get("remove_tail", self.stub.removeTail, key, hint, client_id, **kwargs)
 
     async def remove_element_at_position(
-        self, key: KeyLike, hint=None, pos=0, type=cache_pb2.UNDEFINED, client_id=None, **kwargs
+        self, key: KeyLike, hint=None, pos=0, type=cache_pb2.UNDEFINED, client_id=None, *, end: int | None = None, **kwargs
     ):
         request = self._position(key, hint, pos, None, False, type, client_id)
+        if end is not None and end > pos:
+            request.end = end
         return await self._unary(
             "remove_element_at_position", self.stub.removeElementAtPosition, request, lambda r: r.value, **kwargs
         )

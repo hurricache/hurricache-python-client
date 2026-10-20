@@ -76,8 +76,10 @@ class HurriCacheClient(Defaults):
         *,
         default_ttl: int = 0,
         default_compression_threshold: int = 1024,
+        payload_compression: str = "gzip",
+        zero_client_id_uses_default: bool = True,
     ):
-        configure(self, default_ttl, default_compression_threshold)
+        configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._host = host
         self._port = port
         self._default_client_id = default_client_id
@@ -94,7 +96,7 @@ class HurriCacheClient(Defaults):
     @property
     def channel(self) -> grpc.Channel:
         if self._channel is None:
-            options: list[tuple[str, object]] = []
+            options: list[tuple[str, object]] = [("grpc.max_receive_message_length", 64 * 1024 * 1024)]
             if self._credentials is not None:
                 self._channel = grpc.secure_channel(
                     f"{self._host}:{self._port}",
@@ -136,7 +138,9 @@ class HurriCacheClient(Defaults):
     # ------------------------------------------------------------------
 
     def _resolve_client_id(self, client_id: int | None) -> int:
-        return client_id if client_id is not None and client_id != 0 else self._default_client_id
+        if client_id is None or (client_id == 0 and self._zero_client_id_uses_default):
+            return self._default_client_id
+        return client_id
 
     def _build_key(
         self,
@@ -1249,9 +1253,13 @@ class HurriCacheClient(Defaults):
         pos: int = 0,
         type: cache_pb2.ContainerType = cache_pb2.ContainerType.UNDEFINED,
         client_id: int | None = None,
+        *,
+        end: int | None = None,
         **kwargs,
     ) -> bool:
         """Remove element at position from container.
+
+        The optional range end is encoded only when greater than pos.
 
         Args:
             key: Container key.
@@ -1268,6 +1276,8 @@ class HurriCacheClient(Defaults):
             type=type,
             pos=pos,
         )
+        if end is not None and end > pos:
+            request.end = end
         response = self._call("remove_element_at_position", self.stub.removeElementAtPosition, request, **kwargs)
         return response.value
 

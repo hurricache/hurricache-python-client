@@ -14,6 +14,11 @@ HurriCacheClient(
     default_timeout: float = 1.0,
     credentials: grpc.ChannelCredentials | None = None,
     compression: grpc.Compression | None = None,
+    *,
+    default_ttl: int = 0,
+    default_compression_threshold: int = 1024,
+    payload_compression: str = "gzip",
+    zero_client_id_uses_default: bool = True,
 )
 
 AsyncHurriCacheClient(...)  # same arguments
@@ -26,16 +31,33 @@ HurriCacheSmartClient(
     coordinators: str | Sequence[str] = "localhost:50051",
     coordinator_port: int | None = None,
     *,
+    default_ttl: int = 0,
+    default_compression_threshold: int = 1024,
+    payload_compression: str = "gzip",
+    zero_client_id_uses_default: bool = True,
     default_client_id: int = 0,
     default_timeout: float = 1.0,
     readiness_timeout: float = 60.0,
     refresh_interval: float = 30.0,
     mode: Mode = Mode.MASTER_THEN_BACKUP,
     credentials: grpc.ChannelCredentials | None = None,
+    compression: grpc.Compression | None = None,
 )
 
 AsyncHurriCacheSmartClient(...)  # same arguments
 ```
+
+All four constructors use `payload_compression="gzip"` by default. Select `"lz4"`
+after installing `hurricache[lz4]`; missing the extra raises `ImportError` during
+construction. LZ4 uses raw blocks with no frame or embedded size prefix. The
+protobuf supplies the raw size. Readers must select the codec used by the writer;
+there is no format detection. `compression=` controls gRPC transport independently.
+
+With `zero_client_id_uses_default=True`, per-call `None` and `0` both select
+`default_client_id`. With `False`, explicit zero is sent unchanged and only `None`
+selects the default. Keys, lock ownership, and continuation chunks use the same
+policy. Smart clients propagate these settings to every discovered node. Cache
+channels accept messages up to 64 MiB; each decoded payload is also limited to 64 MiB.
 
 Smart-client lifecycle and configuration methods:
 
@@ -117,8 +139,15 @@ get_element_in_range(key, hint=None, pos=0, end=0,
                      client_id=None, **rpc_options) -> list | dict
 remove_head(...) -> bool
 remove_tail(...) -> bool
-remove_element_at_position(...) -> bool
+remove_element_at_position(key, hint=None, pos=0, type=ContainerType.UNDEFINED,
+                           client_id=None, *, end: int | None = None, **rpc_options) -> bool
 ```
+
+Removal positions use unsigned 64-bit wire bounds. `end` is sent only when it is
+greater than `pos`; omitted, equal, and reversed ends perform the existing point
+removal. Invalid encoded bounds fail before an RPC. Batch map removal preserves
+Python's `(key, hint, type, values, keys, client_id)` argument order; keys and values
+populate their corresponding wire fields.
 
 For list/vector, `pos`, `start`, and `end` are zero-based positions. For ordered structures, they are unsigned 64-bit weights. Range results are decoded from the full stream.
 
@@ -195,4 +224,14 @@ Synchronous streaming failures and `grpc.aio` streaming failures use the same ma
 
 ## Updated parity APIs
 
-See [the count and weighted API additions](README.md#count-and-weighted-conveniences), [complete overload mappings](API_PARITY.md), and [GZIP field policy](README.md#compression-and-errors). All existing positional signatures and result models are retained.
+See [the count and weighted API additions](README.md#count-and-weighted-conveniences), [complete overload mappings](API_PARITY.md), and [compression field policy](README.md#compression-and-errors). All existing positional signatures and result models are retained.
+
+## Jedis adapters
+
+`hurricache.jedis.Jedis(client)` and `JedisPool(client)` accept a synchronous direct
+or smart client. `pool.get_resource()` returns a new `Jedis` sharing that client.
+`jedis.ping()` returns `"PONG"` locally without an RPC. Both wrappers support
+`with`; closing a resource or pool closes the shared underlying client, including
+when a context exits with an exception. Redis commands commented out in Java are
+not part of this adapter. Replication protobuf messages and stubs remain available;
+there is no new application-level replication API.

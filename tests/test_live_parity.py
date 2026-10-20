@@ -1,4 +1,4 @@
-"""Opt-in tests for the pinned GZIP digest; no live coordinator is required."""
+"""Opt-in standalone tests for both payload codecs; no live coordinator required."""
 
 import asyncio
 import os
@@ -14,10 +14,13 @@ pytestmark = pytest.mark.skipif(not TARGET, reason="set HURRICACHE_TEST_TARGET f
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_live_creation_continuations_and_insertion(asynchronous, monkeypatch):
+@pytest.mark.parametrize("codec", ["gzip", "lz4"])
+async def test_live_creation_continuations_and_insertion(asynchronous, monkeypatch, codec):
+    if codec == "lz4":
+        pytest.importorskip("lz4.block")
     host, port = TARGET.rsplit(":", 1)
     cls = AsyncHurriCacheClient if asynchronous else HurriCacheClient
-    client = cls(host, int(port), default_timeout=10)
+    client = cls(host, int(port), default_timeout=10, payload_compression=codec, default_compression_threshold=32)
     from test_parity import invoke
     keys = []
     try:
@@ -73,9 +76,31 @@ async def test_live_lock_expiration():
             assert await client.lock_object(key, hint, LockType.WRITE_LOCK, 78, 2) != LockStatus.OK
             await asyncio.sleep(2.1)
             status = await client.lock_object(key, hint, LockType.WRITE_LOCK, 78, 2)
-            if status != LockStatus.OK:
-                pytest.xfail("pinned GZIP server retains owner 77 beyond the absolute lock expiration; see FINDINGS.md")
+            assert status == LockStatus.OK
             await client.unlock_object(key, hint, 78)
         finally:
             await client.unlock_object(key, hint, 77)
             await client.remove(key, hint, client_id=77)
+
+
+@pytest.mark.parametrize("codec", ["gzip", "lz4"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_live_scalar_codecs_and_compressed_keys(codec, asynchronous):
+    if codec == "lz4":
+        pytest.importorskip("lz4.block")
+    from test_parity import invoke
+
+    host, port = TARGET.rsplit(":", 1)
+    cls = AsyncHurriCacheClient if asynchronous else HurriCacheClient
+    client = cls(host, int(port), default_timeout=10, payload_compression=codec,
+                 zero_client_id_uses_default=False, default_client_id=77)
+    key = "python-codec/" + uuid.uuid4().hex + "/" + "x" * 2048
+    try:
+        for value in (b"", b"x" * 1023, b"x" * 1024, b"x" * 1025, os.urandom(4096)):
+            hint = await invoke(client, "create_key_value", key, value=value, client_id=0)
+            assert await invoke(client, "get_value", key, hint, client_id=0) == value
+            assert await invoke(client, "remove", key, hint, client_id=0)
+    finally:
+        closed = client.close()
+        if asynchronous:
+            await closed

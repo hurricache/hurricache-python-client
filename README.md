@@ -1,6 +1,6 @@
 # HurriCache Python client
 
-HurriCache's Python 3.10+ client provides the same cache operations and wire behavior as the Java `jdk-16` client. It includes direct and coordinator-aware clients in synchronous and native `grpc.aio` forms. The package version remains `0.1.0`.
+HurriCache's Python 3.10+ client implements the cache operations of Java commit `b97cd2c344625411804f51e7c1034eb3a8bbd668`. It includes direct and coordinator-aware clients in synchronous and native `grpc.aio` forms. The package version remains `0.1.0`. See [FINDINGS.md](FINDINGS.md) for completed verification and the current standalone-image startup blocker.
 
 See [API_REFERENCE.md](API_REFERENCE.md) for method signatures and return types.
 
@@ -11,7 +11,7 @@ See [API_REFERENCE.md](API_REFERENCE.md) for method signatures and return types.
 - `HurriCacheSmartClient`: synchronous coordinator discovery and shard routing.
 - `AsyncHurriCacheSmartClient`: asynchronous coordinator discovery and shard routing.
 - Raw values, TTL, locks, vector/list/queue/set, map, ordered set/map, positions and ranges, atomics, and compare-and-swap.
-- GZIP-only payload compression with a configurable threshold and per-field policy.
+- GZIP payload compression and optional Java-compatible raw LZ4, with a configurable threshold and per-field policy.
 - Roughly 3.5 MiB batching for initial container data and additions.
 - gRPC deadlines, metadata, TLS credentials, cancellation, status mapping, and decoded streaming results.
 
@@ -35,10 +35,10 @@ The compatible dependency ranges are `grpcio>=1.60,<2`, `protobuf>=4.25,<8`, and
 
 ## Standalone server
 
-Java is pinned to `833f2dd9a581a1984129b3f709f63afe3bfdc124`; the server is pinned by digest and listens on port `50000`:
+Java is pinned to `b97cd2c344625411804f51e7c1034eb3a8bbd668`. Pull `latest` at the start of a live-validation run, record its resolved digest, and use that digest throughout. The October 20 pull resolved to the image below; it exits with an illegal instruction on this host before opening port `50000`, so live acceptance remains pending:
 
 ```console
-docker run --rm -p 50000:50000 alexaborisov/fastcache-standalone-noavx512@sha256:e79c96e7610c10ba99c7c11f939c78154ff3a4e6d24689ffdd15f35d2d7b7b1e
+docker run --rm -p 50000:50000 alexaborisov/fastcache-standalone-noavx512@sha256:38618a056eba897874d015f62ac730099b634839ec6c5c403492bab7b4bb52ff
 ```
 
 If the image is hosted in a private registry, prefix the image name with that registry. Cluster examples below require real cache-node and coordinator endpoints; the test suite uses deterministic in-process services and does not pretend to be a live cluster.
@@ -165,7 +165,10 @@ Atomic methods include load, load-and-delete, create, store, exchange, add, subt
 
 ## Compression and errors
 
-Payload compression uses standard-library **GZIP only**. Compression applies strictly when
+Payload compression defaults to standard-library **GZIP**. Install `hurricache[lz4]`
+and set `payload_compression="lz4"` on any constructor for raw LZ4 blocks. There is
+no frame or embedded size prefix; protobuf metadata supplies the raw size.
+Readers and writers must select the same codec. Compression applies strictly when
 `length > threshold`; the default threshold is 1,024 bytes, zero compresses every
 nonempty eligible payload, and negative thresholds are rejected. Transport
 compression is independent of payload compression.
@@ -182,10 +185,21 @@ compression is independent of payload compression.
 | Batch-removal values | None |
 
 Unary results, ordered values, and streamed map keys/values validate encoded size,
-GZIP framing/checksum, declared raw size, and decoded-size limits. Go uses
-`Config.MaxDecodedBytes`; Python bounds decoded payloads to 64 MiB.
-Legacy LZ4-compressed data is incompatible: there is no format sniffing or fallback.
-Recreate or migrate that data using the previous client before switching formats.
+codec validity (including GZIP framing/checksum), declared raw size, and the 64 MiB
+decoded-size limit. Cache channels also accept inbound messages up to 64 MiB.
+There is no format sniffing or codec fallback. Java raw LZ4 data is compatible
+when explicitly selecting LZ4; GZIP remains the backward-compatible default.
+
+All constructors accept `zero_client_id_uses_default=True`. This preserves `None`
+and `0` selecting the configured default ID. Set it to `False` to transmit an
+explicit zero; `None` continues to select the default. Smart nodes and continuation
+requests inherit the selected codec, ownership policy, and transport compression.
+
+`remove_element_at_position` retains its positional arguments and accepts keyword-only
+`end=None`. The end is encoded only when greater than `pos`. Both encoded bounds
+must fit uint64. `hurricache.jedis.Jedis` and `JedisPool` provide the active Java
+adapter lifecycle API around a shared synchronous client; ping is local and closing
+either wrapper closes that client.
 
 gRPC status codes map consistently in unary and streaming calls:
 
@@ -216,6 +230,8 @@ python -m ruff check .
 python -m mypy hurricache
 python -m pytest -q --ignore=tests/test_integration.py
 python -m build
+python -m tools.parity ../hurricache-java-client --check
+python -m tools.verify_wheel
 ```
 
 `tests/test_integration.py` targets a real standalone node at `127.0.0.1:50000`; start the digest-pinned server before running it; historical assumptions in this legacy suite may differ from the current contract. No live coordinator cluster is required for the deterministic smart-client tests.

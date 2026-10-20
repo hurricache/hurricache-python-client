@@ -13,6 +13,7 @@ from hurricache.grpc.exceptions import CancelledError, DeadlineExceededError
 
 deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("hurricache_deadline", default=None)
 threshold: contextvars.ContextVar[int] = contextvars.ContextVar("hurricache_compression", default=1024)
+payload_codec: contextvars.ContextVar[str] = contextvars.ContextVar("hurricache_payload_codec", default="gzip")
 started_millis: contextvars.ContextVar[int | None] = contextvars.ContextVar("hurricache_started_millis", default=None)
 
 
@@ -43,10 +44,12 @@ def operation(client, timeout):
     token = deadline.set(end)
     started_token = started_millis.set(started_millis.get() if started_millis.get() is not None else int(time.time() * 1000))
     compression_token = threshold.set(client._default_compression_threshold)
+    codec_token = payload_codec.set(client._payload_compression)
     try:
         remaining()
         yield
     finally:
+        payload_codec.reset(codec_token)
         threshold.reset(compression_token)
         started_millis.reset(started_token)
         deadline.reset(token)
@@ -79,11 +82,22 @@ class Defaults:
         return self._coordinators[max(0, self._coordinator_index - 1) % len(self._coordinators)]
 
 
-def configure(client, ttl, compression_threshold):
+def configure(client, ttl, compression_threshold, payload_compression="gzip", zero_client_id_uses_default=True):
     if not isinstance(ttl, int) or ttl < 0:
         raise ValueError("default_ttl must be a nonnegative integer")
     if not isinstance(compression_threshold, int) or compression_threshold < 0:
         raise ValueError("default_compression_threshold must be a nonnegative integer")
+    if payload_compression not in ("gzip", "lz4"):
+        raise ValueError("payload_compression must be 'gzip' or 'lz4'")
+    if payload_compression == "lz4":
+        try:
+            import lz4.block  # noqa: F401
+        except ImportError as error:
+            raise ImportError("LZ4 payload compression requires hurricache[lz4]") from error
+    if not isinstance(zero_client_id_uses_default, bool):
+        raise ValueError("zero_client_id_uses_default must be a bool")
+    client._payload_compression = payload_compression
+    client._zero_client_id_uses_default = zero_client_id_uses_default
     client._default_ttl = ttl
     client._default_compression_threshold = compression_threshold
     client._closed = False

@@ -23,10 +23,11 @@ def main():
     parser.add_argument("target")
     parser.add_argument("prefix")
     parser.add_argument("hints", type=Path)
+    parser.add_argument("--payload-compression", choices=["gzip", "lz4"], default="gzip")
     args = parser.parse_args()
     host, port = args.target.rsplit(":", 1)
     if args.action == "probe-longkey":
-        with HurriCacheClient(host, int(port), default_timeout=10) as client:
+        with HurriCacheClient(host, int(port), default_timeout=10, payload_compression=args.payload_compression) as client:
             key = args.prefix + "/longkey/" + "x" * 2048
             hint = client.create_key_value(key, value=data(4096))
             assert client.get_value(key, hint) == data(4096)
@@ -38,7 +39,7 @@ def main():
         for line in args.hints.read_text().splitlines():
             name, weak, strong = line.split()
             hints[name] = KeyHintData(int(weak), int(strong))
-    with HurriCacheClient(host, int(port), default_client_id=77, default_timeout=10) as client:
+    with HurriCacheClient(host, int(port), default_client_id=77, default_timeout=10, payload_compression=args.payload_compression) as client:
         for name in ["empty", "small", "at", "compressed", "random", "list", "ordered", "map", "orderedmap", "large"]:
             key = f"{args.prefix}/{name}"
             size = {"empty": 0, "small": 1023, "at": 1024}.get(name, 4096)

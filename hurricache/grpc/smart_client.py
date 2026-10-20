@@ -107,14 +107,17 @@ class HurriCacheSmartClient(Defaults):
         *,
         default_ttl: int = 0,
         default_compression_threshold: int = 1024,
+        payload_compression: str = "gzip",
+        zero_client_id_uses_default: bool = True,
         default_client_id: int = 0,
         default_timeout: float = 1.0,
         readiness_timeout: float = 60.0,
         refresh_interval: float = 30.0,
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
+        compression: grpc.Compression | None = None,
     ) -> None:
-        configure(self, default_ttl, default_compression_threshold)
+        configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._active = 0
         self._retired: list[Any] = []
         self._coordinators = _coordinator_addresses(coordinators, coordinator_port)
@@ -124,6 +127,7 @@ class HurriCacheSmartClient(Defaults):
         self._refresh_interval = refresh_interval
         self._configured_mode = Mode(mode)
         self._credentials = credentials
+        self._compression = compression
         self._mode_override: contextvars.ContextVar[Mode | None] = contextvars.ContextVar(
             f"hurricache_sync_mode_{id(self)}", default=None
         )
@@ -221,7 +225,10 @@ class HurriCacheSmartClient(Defaults):
                         default_timeout=self._default_timeout,
                         default_ttl=self._default_ttl,
                         default_compression_threshold=self._default_compression_threshold,
+                        payload_compression=self._payload_compression,
+                        zero_client_id_uses_default=self._zero_client_id_uses_default,
                         credentials=self._credentials,
+                        compression=getattr(self, "_compression", None),
                     )
             self._topology = topology
             self._ready.set()
@@ -344,14 +351,17 @@ class AsyncHurriCacheSmartClient(Defaults):
         *,
         default_ttl: int = 0,
         default_compression_threshold: int = 1024,
+        payload_compression: str = "gzip",
+        zero_client_id_uses_default: bool = True,
         default_client_id: int = 0,
         default_timeout: float = 1.0,
         readiness_timeout: float = 60.0,
         refresh_interval: float = 30.0,
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
+        compression: grpc.Compression | None = None,
     ) -> None:
-        configure(self, default_ttl, default_compression_threshold)
+        configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._active = 0
         self._retired: list[Any] = []
         self._coordinators = _coordinator_addresses(coordinators, coordinator_port)
@@ -361,6 +371,7 @@ class AsyncHurriCacheSmartClient(Defaults):
         self._refresh_interval = refresh_interval
         self._configured_mode = Mode(mode)
         self._credentials = credentials
+        self._compression = compression
         self._mode_override: contextvars.ContextVar[Mode | None] = contextvars.ContextVar(
             f"hurricache_async_mode_{id(self)}", default=None
         )
@@ -460,9 +471,12 @@ class AsyncHurriCacheSmartClient(Defaults):
                     port,
                     default_client_id=self._default_client_id,
                     default_timeout=self._default_timeout,
-                        default_ttl=self._default_ttl,
-                        default_compression_threshold=self._default_compression_threshold,
+                    default_ttl=self._default_ttl,
+                    default_compression_threshold=self._default_compression_threshold,
+                    payload_compression=self._payload_compression,
+                    zero_client_id_uses_default=self._zero_client_id_uses_default,
                     credentials=self._credentials,
+                    compression=getattr(self, "_compression", None),
                 )
         self._topology = topology
         self._ready.set()
