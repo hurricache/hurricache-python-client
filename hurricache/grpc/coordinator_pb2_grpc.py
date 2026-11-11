@@ -25,18 +25,14 @@ class CoordinatorServiceStub:
                 '/coordinator.CoordinatorService/getRoutingInfo',
                 request_serializer=coordinator__pb2.PeerRoutingRequest.SerializeToString,
                 response_deserializer=coordinator__pb2.PeerRouting.FromString)
-        self.removeRoutingInfo = channel.unary_unary(
-                '/coordinator.CoordinatorService/removeRoutingInfo',
-                request_serializer=coordinator__pb2.PeerRoutingRequest.SerializeToString,
-                response_deserializer=coordinator__pb2.Void.FromString)
         self.sendRoutingInfo = channel.unary_unary(
                 '/coordinator.CoordinatorService/sendRoutingInfo',
                 request_serializer=coordinator__pb2.RoutingInfoData.SerializeToString,
                 response_deserializer=coordinator__pb2.Void.FromString)
-        self.readyForDataMigration = channel.unary_unary(
-                '/coordinator.CoordinatorService/readyForDataMigration',
-                request_serializer=coordinator__pb2.PeerAnnounceRequest.SerializeToString,
-                response_deserializer=coordinator__pb2.Void.FromString)
+        self.triggerMigration = channel.unary_unary(
+                '/coordinator.CoordinatorService/triggerMigration',
+                request_serializer=coordinator__pb2.NodeInformation.SerializeToString,
+                response_deserializer=coordinator__pb2.BoolResponse.FromString)
         self.provideGlobalRoutingInfo = channel.unary_stream(
                 '/coordinator.CoordinatorService/provideGlobalRoutingInfo',
                 request_serializer=coordinator__pb2.Void.SerializeToString,
@@ -65,19 +61,13 @@ class CoordinatorServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeRoutingInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def sendRoutingInfo(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def readyForDataMigration(self, request, context):
+    def triggerMigration(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -107,20 +97,15 @@ def add_CoordinatorServiceServicer_to_server(servicer, server):
                     request_deserializer=coordinator__pb2.PeerRoutingRequest.FromString,
                     response_serializer=coordinator__pb2.PeerRouting.SerializeToString,
             ),
-            'removeRoutingInfo': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeRoutingInfo,
-                    request_deserializer=coordinator__pb2.PeerRoutingRequest.FromString,
-                    response_serializer=coordinator__pb2.Void.SerializeToString,
-            ),
             'sendRoutingInfo': grpc.unary_unary_rpc_method_handler(
                     servicer.sendRoutingInfo,
                     request_deserializer=coordinator__pb2.RoutingInfoData.FromString,
                     response_serializer=coordinator__pb2.Void.SerializeToString,
             ),
-            'readyForDataMigration': grpc.unary_unary_rpc_method_handler(
-                    servicer.readyForDataMigration,
-                    request_deserializer=coordinator__pb2.PeerAnnounceRequest.FromString,
-                    response_serializer=coordinator__pb2.Void.SerializeToString,
+            'triggerMigration': grpc.unary_unary_rpc_method_handler(
+                    servicer.triggerMigration,
+                    request_deserializer=coordinator__pb2.NodeInformation.FromString,
+                    response_serializer=coordinator__pb2.BoolResponse.SerializeToString,
             ),
             'provideGlobalRoutingInfo': grpc.unary_stream_rpc_method_handler(
                     servicer.provideGlobalRoutingInfo,
@@ -218,32 +203,6 @@ class CoordinatorService:
             metadata)
 
     @staticmethod
-    def removeRoutingInfo(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/coordinator.CoordinatorService/removeRoutingInfo',
-            coordinator__pb2.PeerRoutingRequest.SerializeToString,
-            coordinator__pb2.Void.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
     def sendRoutingInfo(request,
             target,
             options=(),
@@ -270,7 +229,7 @@ class CoordinatorService:
             metadata)
 
     @staticmethod
-    def readyForDataMigration(request,
+    def triggerMigration(request,
             target,
             options=(),
             channel_credentials=None,
@@ -283,9 +242,9 @@ class CoordinatorService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/coordinator.CoordinatorService/readyForDataMigration',
-            coordinator__pb2.PeerAnnounceRequest.SerializeToString,
-            coordinator__pb2.Void.FromString,
+            '/coordinator.CoordinatorService/triggerMigration',
+            coordinator__pb2.NodeInformation.SerializeToString,
+            coordinator__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
             insecure,

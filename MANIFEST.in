@@ -12,3 +12,5 @@ include tools/interop.py
 include tools/verify_wheel.py
 include tools/java_interop.py
 include tools/CodecInterop.java
+include tools/LiveInterop.java
+include tools/reference.py

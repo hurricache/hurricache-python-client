@@ -1,106 +1,88 @@
-"""Opt-in standalone tests for both payload codecs; no live coordinator required."""
+"""Standalone continuations, ordering, TTL and lock acceptance without expected failures."""
 
 import asyncio
 import os
-import uuid
+import time
 
 import pytest
+from test_parity import invoke
 
-from hurricache import AsyncHurriCacheClient, HurriCacheClient, LockStatus, LockType, OrderedPayload, Payload
+from hurricache import LockStatus, LockType, OrderedPayload, OrderedVariant, Variant
 from hurricache.grpc import batching
 
-TARGET = os.environ.get("HURRICACHE_TEST_TARGET")
-pytestmark = pytest.mark.skipif(not TARGET, reason="set HURRICACHE_TEST_TARGET for disposable pinned server")
+pytestmark = pytest.mark.skipif(not os.environ.get("HURRICACHE_TEST_TARGET"), reason="requires pinned standalone startup")
+pytest_plugins = ["test_integration"]
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("codec", ["gzip", "lz4"])
-async def test_live_creation_continuations_and_insertion(asynchronous, monkeypatch, codec):
-    if codec == "lz4":
-        pytest.importorskip("lz4.block")
-    host, port = TARGET.rsplit(":", 1)
-    cls = AsyncHurriCacheClient if asynchronous else HurriCacheClient
-    client = cls(host, int(port), default_timeout=10, payload_compression=codec, default_compression_threshold=32)
-    from test_parity import invoke
-    keys = []
+@pytest.mark.parametrize("family", ["list", "vector", "queue", "set", "ordered_set", "map", "ordered_map"])
+async def test_live_creation_continuations(live_client, monkeypatch, family):
+    client, key = live_client
+    values = [Variant.of_bytes(bytes([i]) * 60) if i % 3 == 0 else Variant.of_long(i) if i % 3 == 1 else Variant.of_double(i+0.5)
+              for i in range(18)]
+    options = {"values": values}
+    if family == "ordered_set":
+        options["values"] = [OrderedVariant.of(v, i+1) for i, v in enumerate(values)]
+    elif family in ("map", "ordered_map"):
+        options["keys"] = [OrderedPayload(str(i).encode(), i+1) if family == "ordered_map" else str(i).encode()
+                           for i in range(len(values))]
+    name = key()
+    monkeypatch.setattr(batching, "MAX_RPC_SIZE", 250)
+    hint = await invoke(client, "create_" + family, name, **options)
+    if family == "queue":
+        assert await invoke(client, "get_size", name, hint) == len(values)
+        assert [await invoke(client, "pop_head", name, hint) for _ in values] == values
+        return
+    actual = await invoke(client, "get_" + family, name, hint)
+    if isinstance(actual, dict):
+        actual = list(actual.values())
+    assert len(actual) == len(values)
+    if family not in ("map", "ordered_map", "set"):
+        assert actual == options["values"]
+    else:
+        assert set(actual) == set(values)
+
+
+@pytest.mark.parametrize("operation", ["push_head", "push_tail", "insert_at", "insert_before", "insert_after"])
+async def test_live_chunked_insertion_order(live_client, monkeypatch, operation):
+    client, key = live_client
+    values = [os.urandom(100) for _ in range(8)]
+    results = []
+    # Advancing pivot anchors carry a full preceding value, so reserve space
+    # for both that anchor and one compressed element in each request.
+    for budget in (350 if operation in ("insert_before", "insert_after") else 250, 3670016):
+        monkeypatch.setattr(batching, "MAX_RPC_SIZE", budget)
+        name = key()
+        hint = await invoke(client, "create_list", name, values=[b"pivot"])
+        options = {"values": values}
+        if operation in ("insert_before", "insert_after"):
+            options["pivot"] = b"pivot"
+        if operation == "insert_at":
+            options["pos"] = 1
+        assert await invoke(client, operation, name, hint, **options) == len(values)
+        results.append(await invoke(client, "get_list", name, hint))
+    assert results[0] == results[1]
+
+
+async def test_live_lock_expiration_and_ttl(live_client):
+    client, key = live_client
+    name = key()
+    hint = await invoke(client, "create", name, value=1, ttl=10000)
+    assert 0 < await invoke(client, "get_ttl", name, hint) <= 10000
+    assert await invoke(client, "set_ttl", name, hint, ttl=-1)
+    assert await invoke(client, "get_ttl", name, hint) == -1
+    assert await invoke(client, "lock", name, hint, LockType.WRITE_LOCK, 77, 2) == LockStatus.OK
     try:
-        for kind in ["list", "vector", "queue", "set", "ordered_set", "map", "ordered_map"]:
-            key = "python-parity/" + uuid.uuid4().hex
-            keys.append(key)
-            values = [bytes([i + 65]) * 60 for i in range(12)]
-            kwargs = {"values": values}
-            if kind == "ordered_set":
-                kwargs["values"] = [OrderedPayload(v, i) for i, v in enumerate(values)]
-            elif kind == "ordered_map":
-                kwargs["keys"] = [OrderedPayload(bytes([i]), i) for i in range(len(values))]
-            elif kind == "map":
-                kwargs["keys"] = [bytes([i]) for i in range(len(values))]
-            monkeypatch.setattr(batching, "MAX_RPC_SIZE", 350)
-            hint = await invoke(client, "create_" + kind, key, **kwargs)
-            if kind == "queue":
-                got = [await invoke(client, "get_and_remove_front", key, hint) for _ in values]
-                assert got == values
-            else:
-                got = await invoke(client, "stream_" + kind, key, hint)
-                assert len(got) == len(values)
-                if kind in ("list", "vector"):
-                    assert got == [Payload(v) for v in values]
-        for operation in ["head", "tail", "position", "position_before", "position_after"]:
-            results = []
-            for budget in [350, 3670016]:
-                monkeypatch.setattr(batching, "MAX_RPC_SIZE", budget)
-                key = "python-parity/" + uuid.uuid4().hex
-                keys.append(key)
-                hint = await invoke(client, "create_list", key, values=[b"pivot"])
-                options = {"values": values}
-                if operation in ("position_before", "position_after"):
-                    options["pivot"] = b"pivot"
-                await invoke(client, "add_element_to_" + operation, key, hint, **options)
-                results.append(await invoke(client, "stream_list", key, hint))
-            assert results[0] == results[1], operation
+        assert await invoke(client, "lock", name, hint, LockType.WRITE_LOCK, 78, 2) != LockStatus.OK
+        await asyncio.sleep(2.1)
+        # The standalone server expires locks on a coarse timer; allow its next
+        # tick rather than requiring an exact wall-clock boundary.
+        deadline = time.monotonic() + 2
+        while True:
+            status = await invoke(client, "lock", name, hint, LockType.WRITE_LOCK, 78, 2)
+            if status == LockStatus.OK or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.05)
+        assert status == LockStatus.OK
     finally:
-        for key in keys:
-            await invoke(client, "remove", key)
-        result = client.close()
-        if asynchronous:
-            await result
-
-
-async def test_live_lock_expiration():
-    host, port = TARGET.rsplit(":", 1)
-    key = "python-lock/" + uuid.uuid4().hex
-    async with AsyncHurriCacheClient(host, int(port), default_timeout=5) as client:
-        hint = await client.create_key_value(key, value=b"lock")
-        try:
-            assert await client.lock_object(key, hint, LockType.WRITE_LOCK, 77, 2) == LockStatus.OK
-            assert await client.lock_object(key, hint, LockType.WRITE_LOCK, 78, 2) != LockStatus.OK
-            await asyncio.sleep(2.1)
-            status = await client.lock_object(key, hint, LockType.WRITE_LOCK, 78, 2)
-            assert status == LockStatus.OK
-            await client.unlock_object(key, hint, 78)
-        finally:
-            await client.unlock_object(key, hint, 77)
-            await client.remove(key, hint, client_id=77)
-
-
-@pytest.mark.parametrize("codec", ["gzip", "lz4"])
-@pytest.mark.parametrize("asynchronous", [False, True])
-async def test_live_scalar_codecs_and_compressed_keys(codec, asynchronous):
-    if codec == "lz4":
-        pytest.importorskip("lz4.block")
-    from test_parity import invoke
-
-    host, port = TARGET.rsplit(":", 1)
-    cls = AsyncHurriCacheClient if asynchronous else HurriCacheClient
-    client = cls(host, int(port), default_timeout=10, payload_compression=codec,
-                 zero_client_id_uses_default=False, default_client_id=77)
-    key = "python-codec/" + uuid.uuid4().hex + "/" + "x" * 2048
-    try:
-        for value in (b"", b"x" * 1023, b"x" * 1024, b"x" * 1025, os.urandom(4096)):
-            hint = await invoke(client, "create_key_value", key, value=value, client_id=0)
-            assert await invoke(client, "get_value", key, hint, client_id=0) == value
-            assert await invoke(client, "remove", key, hint, client_id=0)
-    finally:
-        closed = client.close()
-        if asynchronous:
-            await closed
+        await invoke(client, "unlock", name, hint, client_id=78)
+        await invoke(client, "unlock", name, hint, client_id=77)

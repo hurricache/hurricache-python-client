@@ -1,237 +1,222 @@
-# HurriCache Python API reference
+# HurriCache 0.2.0 Python API
 
-This reference describes package `hurricache` version `0.1.0`. For installation, architecture, and complete examples, see the [README](README.md).
+Java baseline: `0a2b1d851405744e9390bcf5b5e8592177b121e4`. This protocol requires a matching server.
+See [README.md](README.md) for migration/examples, [API_PARITY.md](API_PARITY.md) for every Java overload,
+and [FINDINGS.md](FINDINGS.md) for acceptance evidence.
 
-All operation names are snake_case. Unless stated otherwise, the async classes expose the same call shape and return value as their sync equivalents, with `await` added.
+## Clients and shared arguments
 
-## Clients
+`HurriCacheClient` and `AsyncHurriCacheClient` accept host='localhost', port=50000, default_client_id=0,
+default_timeout=1.0, credentials=None, compression=None; keyword-only default_ttl=0,
+default_compression_threshold=1024, payload_compression='gzip', zero_client_id_uses_default=True.
+Sync supports `with`; native async supports `async with` and awaits every operation/close.
 
-```python
-HurriCacheClient(
-    host: str = "localhost",
-    port: int = 50000,
-    default_client_id: int = 0,
-    default_timeout: float = 1.0,
-    credentials: grpc.ChannelCredentials | None = None,
-    compression: grpc.Compression | None = None,
-    *,
-    default_ttl: int = 0,
-    default_compression_threshold: int = 1024,
-    payload_compression: str = "gzip",
-    zero_client_id_uses_default: bool = True,
-)
+`HurriCacheSmartClient` and `AsyncHurriCacheSmartClient` accept coordinators='localhost:50051',
+coordinator_port=None; all defaults above are keyword-only, with readiness_timeout=60.0,
+refresh_interval=30.0, mode=Mode.MASTER_THEN_BACKUP. Lifecycle: wait_until_ready(timeout=None),
+set_mode(mode), clear_mode(), mode(mode) context manager, close(). Async readiness/close are awaited.
 
-AsyncHurriCacheClient(...)  # same arguments
-```
+Keys: bytes or UTF-8 str. hint=None omits hints; client_id=None selects the configured ID.
+Explicit zero selects it unless zero_client_id_uses_default=False. TTL is milliseconds; timeout= and
+lock_duration are seconds. ttl=None uses default_ttl, ttl=0 omits creation TTL. Negative set_ttl persists.
+`**kwargs` forwards gRPC options such as timeout= and metadata=. One deadline covers the operation.
 
-`default_timeout` and an operation's `timeout=` override are seconds. `credentials` creates a secure channel; otherwise the channel is plaintext. Sync clients support `with`; async clients support `async with`.
+## Results and models
 
-```python
-HurriCacheSmartClient(
-    coordinators: str | Sequence[str] = "localhost:50051",
-    coordinator_port: int | None = None,
-    *,
-    default_ttl: int = 0,
-    default_compression_threshold: int = 1024,
-    payload_compression: str = "gzip",
-    zero_client_id_uses_default: bool = True,
-    default_client_id: int = 0,
-    default_timeout: float = 1.0,
-    readiness_timeout: float = 60.0,
-    refresh_interval: float = 30.0,
-    mode: Mode = Mode.MASTER_THEN_BACKUP,
-    credentials: grpc.ChannelCredentials | None = None,
-    compression: grpc.Compression | None = None,
-)
+Scalar reads, pop, peek, get_at and value updates return Variant. An absent successful response returns Variant.none().
+Weighted single-element reads return Variant, including when the wire element carries an order.
+Ordered collection elements return OrderedVariant. Server NOT_FOUND status still raises KeyNotFoundError.
+Creation returns KeyHintData. Collections/ranges return list[Variant], list[OrderedVariant],
+dict[Payload, Variant], or dict[OrderedPayload, Variant]. Maps preserve streamed insertion order.
+Push, insert, put_all, delete and container removals return integer server counts. Whole-key remove,
+contains and set_ttl return bool; lock/unlock return LockStatus; get_size returns int.
+Numeric atomics return int or float, bitwise operations int. compare_and_set returns
+CasResult(success, expected_value: int | float | None, hint: KeyHintData | None).
 
-AsyncHurriCacheSmartClient(...)  # same arguments
-```
+compare_and_set_in_container selects a map field with bytes/str, or an ordered-map field with
+OrderedPayload carrying an explicit current order. It promotes mixed numeric operands to DOUBLE,
+uses write routing, and leaves TTL absent as Java does. Positions/bools are invalid selectors.
+Full queue-content reads (get_queue/stream_queue) are legacy conveniences unsupported by the
+server contract. Use get_size, peek_head/peek_tail, and pop_head/pop_tail for queues.
 
-All four constructors use `payload_compression="gzip"` by default. Select `"lz4"`
-after installing `hurricache[lz4]`; missing the extra raises `ImportError` during
-construction. LZ4 uses raw blocks with no frame or embedded size prefix. The
-protobuf supplies the raw size. Readers must select the codec used by the writer;
-there is no format detection. `compression=` controls gRPC transport independently.
+Variant factories: none(), of_bytes(bytes), of_long(int)/of_int(int), of_double(float).
+Properties: type (VariantType.NONE/BYTES/INT/DOUBLE), value, is_none/is_bytes/is_int/is_double.
+Checked accessors: require_bytes(), require_long()/require_int(), require_double(), number_value().
+bytes_value/long_value/int_value/double_value are checked properties. Equality is type-sensitive;
+NaNs compare equal and signed zeros differ. Models are immutable/hashable and copy byte buffers.
 
-With `zero_client_id_uses_default=True`, per-call `None` and `0` both select
-`default_client_id`. With `False`, explicit zero is sent unchanged and only `None`
-selects the default. Keys, lock ownership, and continuation chunks use the same
-policy. Smart clients propagate these settings to every discovered node. Cache
-channels accept messages up to 64 MiB; each decoded payload is also limited to 64 MiB.
+OrderedVariant(variant, order=None)/of(variant, order=None) delegates accessors/predicates and adds has_order.
+of_bytes/of_int/of_long/of_double(value, order=None) are factories. Decode preserves absent order;
+Java-compatible writes encode absent order as zero. Payload(value) and OrderedPayload(value, order=0)
+represent byte map keys. A nullable ordered-key order decodes as None.
 
-Smart-client lifecycle and configuration methods:
+KeyHintData(weak_hash=None, strong_hash=None, was_relayed=False) retains week_hash as a constructor/property alias.
+Equality/hash compare only hashes; is_specified and bool indicate hash presence. Creation propagates relay metadata.
+LockType: NO_LOCK, WRITE_LOCK, READ_LOCK, GLOBAL. LockStatus: OK, CANT_LOCK, CANT_UNLOCK, GENERIC_ERROR.
+ContainerType: UNDEFINED, VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET.
+Mode: MASTER, BACKUP, MASTER_THEN_BACKUP (MASTER_THAN_BACKUP alias), LB_SMART.
 
-- `wait_until_ready(timeout: float | None = None) -> None` (await on async)
-- `set_mode(mode: Mode) -> Self`: set a caller-local override.
-- `clear_mode() -> Self`: remove that override.
-- `mode(mode: Mode)`: scoped context manager.
-- `close() -> None` / `await close()`.
+Container selectors accept byte/string entry keys or uint64 integer positions, including zero.
+Exactly one ContainerKey oneof is encoded. bools are rejected as numeric values/selectors/positions.
+Integer operands must fit signed int64 before RPC execution; bitwise operations are integer-only.
+CAS promotes operands to double when either is float and preserves the observed response type.
 
-## Models and enums
+## Operations
 
-- `Payload(value: bytes)`: immutable, hashable decoded payload.
-- `OrderedPayload(value: bytes, order: int = 0)`: payload with an unsigned 64-bit score/order.
-- `KeyHintData(week_hash: int | None = None, strong_hash: int | None = None)`: nullable server hashes. `is_specified` and boolean conversion indicate whether either field is present.
-- `CasResult(success: bool, expected_value: int | None, hint: KeyHintData | None)`: complete CAS response.
-- `LockType`: `NO_LOCK`, `WRITE_LOCK`, `READ_LOCK`, `GLOBAL`.
-- `LockStatus`: `OK`, `CANT_LOCK`, `CANT_UNLOCK`, `GENERIC_ERROR`.
-- `ContainerType`: `UNDEFINED`, `VECTOR`, `LIST`, `QUEUE`, `SET`, `MAP`, `ORDERED_MAP`, `ORDERED_SET`.
-- `Mode`: `MASTER`, `BACKUP`, `MASTER_THEN_BACKUP`, `LB_SMART`. `MASTER_THAN_BACKUP` is a Java-source-compatible alias.
+Signatures are identical across all four clients; use await for async. Named arguments collapse Java overloads.
+create_map/create_ordered_map also accept keys={Payload: Variant} with values omitted. Other map operations
+accept paired keys/values lists; mismatched lengths fail before execution. contains_key/remove optionally accept
+keyword-only element_key= for Java container overloads; remove then returns an int count.
+get_range supports LIST, VECTOR and SET. Ordered reads encode supplied zero bounds; None omits a bound.
+Destructive ranges omit nonpositive/None bounds, following Java. remove_at sends end only when end > pos.
 
-Keys accept `bytes | str`; strings use UTF-8. TTL arguments are relative milliseconds. Lock duration and RPC deadlines are seconds.
+Ordered-map/set order updates identify exactly one member by its bytes and current order in OrderedPayload.
+update_order(..., element_key=OrderedPayload(member, current_order), new_order=0) sets an unsigned uint64 order.
+increment_order(..., element_key=OrderedPayload(member, current_order), delta=-5) adds a signed int64 delta.
+Both return the server's bool result and preserve the member/value. Missing current orders and invalid operands
+fail before RPC execution. Wrong current orders raise KeyNotFoundError; server arithmetic underflow/overflow
+is exposed as HurriCacheRpcError with code OUT_OF_RANGE and leaves the member unchanged.
+The Java update overload also works as update(key, hint, OrderedPayload(member, current_order), new_order),
+or with keyword new_order=. Plain byte element keys continue to perform typed value updates.
+Current protocol: UpdateContainerRequest selects element_key/ordered_element_key and value/new_order/delta_order.
+The plain value field moved to wire tag 4; upgrade servers/clients together, including from the earlier 0.2 draft.
 
-## Values and common operations
+| Operation signature |
+| --- |
+| `add(key, hint=None, delta=0, ttl=None, client_id=None, **kwargs)` |
+| `add_element_ordered_map(key, hint=None, keys=None, values=None, client_id=None, **kwargs)` |
+| `add_element_unordered(key, hint=None, values=None, client_id=None, **kwargs)` |
+| `add_element_with_weight(key, hint=None, values=None, client_id=None, **kwargs)` |
+| `add_in_container(key, hint=None, selector=b'', delta=0, ttl=None, client_id=None, **kwargs)` |
+| `and_(key, hint=None, mask=0, ttl=None, client_id=None, **kwargs)` |
+| `and_in_container(key, hint=None, selector=b'', mask=0, ttl=None, client_id=None, **kwargs)` |
+| `compare_and_set(key, hint=None, expected_value=0, new_value=0, ttl=None, client_id=None, **kwargs)` |
+| `compare_and_set_in_container(key, hint=None, selector=b'', expected_value=0, new_value=0, client_id=None, **kwargs)` |
+| `contains_in_container(key, hint=None, element_key=b'', client_id=None, **kwargs)` |
+| `contains_key(key, hint=None, client_id=None, *, element_key=None, **kwargs)` |
+| `create(key, hint=None, value=Variant(type=<VariantType.NONE: 0>, value=None), ttl=None, client_id=None, **kwargs)` |
+| `create_list(key, hint=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_map(key, hint=None, keys=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_ordered_map(key, hint=None, keys=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_ordered_set(key, hint=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_queue(key, hint=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_set(key, hint=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `create_vector(key, hint=None, values=None, ttl=None, client_id=None, **kwargs)` |
+| `delete_head(key, hint=None, client_id=None, **kwargs)` |
+| `delete_tail(key, hint=None, client_id=None, **kwargs)` |
+| `exchange(key, hint=None, value=0, ttl=None, client_id=None, **kwargs)` |
+| `exchange_in_container(key, hint=None, selector=b'', value=0, ttl=None, client_id=None, **kwargs)` |
+| `get(key, hint=None, client_id=None, **kwargs)` |
+| `get_and_delete_element_in_range_ordered_map(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_and_delete_element_in_range_ordered_set(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_and_delete_list_elements_in_range(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_and_delete_vector_elements_in_range(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_and_remove_element_with_weight(key, hint=None, pos=0, client_id=None, **kwargs)` |
+| `get_at(key, hint=None, pos=0, client_id=None, **kwargs)` |
+| `get_container(key, hint=None, client_id=None, **kwargs)` |
+| `get_element_in_range_ordered_map(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_element_in_range_ordered_set(key, hint=None, pos=0, end=0, reverse=False, client_id=None, **kwargs)` |
+| `get_element_with_weight(key, hint=None, pos=0, client_id=None, **kwargs)` |
+| `get_in_container(key, hint=None, element_key=b'', client_id=None, **kwargs)` |
+| `get_list(key, hint=None, client_id=None, **kwargs)` |
+| `get_map(key, hint=None, client_id=None, **kwargs)` |
+| `get_ordered_map(key, hint=None, client_id=None, **kwargs)` |
+| `get_ordered_set(key, hint=None, client_id=None, **kwargs)` |
+| `get_queue(key, hint=None, client_id=None, **kwargs)` |
+| `get_range(key, hint=None, type=2, pos=0, end=0, client_id=None, **kwargs)` |
+| `get_set(key, hint=None, client_id=None, **kwargs)` |
+| `get_size(key, hint=None, client_id=None, **kwargs)` |
+| `get_ttl(key, hint=None, client_id=None, **kwargs)` |
+| `get_vector(key, hint=None, client_id=None, **kwargs)` |
+| `increment_order(key, hint=None, element_key=None, delta=0, client_id=None, **kwargs)` |
+| `insert_after(key, hint=None, values=None, pivot=Variant(type=<VariantType.NONE: 0>, value=None), client_id=None, **kwargs)` |
+| `insert_at(key, hint=None, values=None, pos=0, client_id=None, **kwargs)` |
+| `insert_before(key, hint=None, values=None, pivot=Variant(type=<VariantType.NONE: 0>, value=None), client_id=None, **kwargs)` |
+| `lock(key, hint=None, lock_type=<LockType.NO_LOCK: 0>, client_id=None, lock_duration=0, **kwargs)` |
+| `or_(key, hint=None, mask=0, ttl=None, client_id=None, **kwargs)` |
+| `or_in_container(key, hint=None, selector=b'', mask=0, ttl=None, client_id=None, **kwargs)` |
+| `peek_head(key, hint=None, client_id=None, **kwargs)` |
+| `peek_tail(key, hint=None, client_id=None, **kwargs)` |
+| `pop(key, hint=None, client_id=None, **kwargs)` |
+| `pop_at(key, hint=None, pos=0, client_id=None, **kwargs)` |
+| `pop_head(key, hint=None, client_id=None, **kwargs)` |
+| `pop_in_container(key, hint=None, element_key=b'', client_id=None, **kwargs)` |
+| `pop_tail(key, hint=None, client_id=None, **kwargs)` |
+| `push_head(key, hint=None, values=None, client_id=None, **kwargs)` |
+| `push_tail(key, hint=None, values=None, client_id=None, **kwargs)` |
+| `put_all(key, hint=None, keys=None, values=None, client_id=None, **kwargs)` |
+| `remove(key, hint=None, client_id=None, *, element_key=None, **kwargs)` |
+| `remove_at(key, hint=None, pos=0, end=0, client_id=None, **kwargs)` |
+| `remove_from_container_by_key(key, hint=None, container_key=b'', client_id=None, **kwargs)` |
+| `remove_from_container_by_key_and_value(key, hint=None, keys=None, values=None, client_id=None, **kwargs)` |
+| `remove_in_container(key, hint=None, element_key=b'', client_id=None, **kwargs)` |
+| `replace(key, hint=None, value=Variant(type=<VariantType.NONE: 0>, value=None), ttl=None, client_id=None, **kwargs)` |
+| `set_ttl(key, hint=None, ttl=0, client_id=None, **kwargs)` |
+| `sub(key, hint=None, delta=0, ttl=None, client_id=None, **kwargs)` |
+| `sub_in_container(key, hint=None, selector=b'', delta=0, ttl=None, client_id=None, **kwargs)` |
+| `unlock(key, hint=None, client_id=None, **kwargs)` |
+| `update(key, hint=None, element_key=b'', value=Variant(type=<VariantType.NONE: 0>, value=None), client_id=None, *, new_order=None, **kwargs)` |
+| `update_order(key, hint=None, element_key=None, new_order=0, client_id=None, **kwargs)` |
+| `xor(key, hint=None, mask=0, ttl=None, client_id=None, **kwargs)` |
+| `xor_in_container(key, hint=None, selector=b'', mask=0, ttl=None, client_id=None, **kwargs)` |
 
-```python
-create_key_value(key, hint=None, value=b"", ttl=0, client_id=None, **rpc_options) -> KeyHintData
-get_value(key, hint=None, client_id=None, **rpc_options) -> bytes
-get_and_delete_value(key, hint=None, client_id=None, **rpc_options) -> bytes
-exist_key(key, hint=None, client_id=None, **rpc_options) -> bool
-update_value(key, hint=None, value=b"", ttl=0, client_id=None, **rpc_options) -> bytes
-remove(key, hint=None, client_id=None, **rpc_options) -> bool
-get_size(key, hint=None, client_id=None, **rpc_options) -> int
-```
+## Deprecated aliases
 
-`update_value` returns the previous value. `**rpc_options` are passed to gRPC and commonly include `timeout`, `metadata`, `credentials`, `wait_for_ready`, and `compression` where supported.
+These preserve positional binding, emit DeprecationWarning, and return current typed/count results.
+Incompatible legacy methods, boolean insertions and atomic_create/store/load/load_and_delete are removed.
+README.md lists their replacements. No legacy return mode is provided.
 
-## TTL and locks
+| Deprecated name | Current name |
+| --- | --- |
+| `atomic_add` | `add` |
+| `atomic_and` | `and_` |
+| `atomic_compare_and_set` | `compare_and_set` |
+| `atomic_exchange` | `exchange` |
+| `atomic_or` | `or_` |
+| `atomic_sub` | `sub` |
+| `atomic_xor` | `xor` |
+| `create_key_value` | `create` |
+| `exist_key` | `contains_key` |
+| `get_and_delete_value` | `pop` |
+| `get_and_remove_front` | `pop_head` |
+| `get_and_remove_tail` | `pop_tail` |
+| `get_front` | `peek_head` |
+| `get_head` | `peek_head` |
+| `get_tail` | `peek_tail` |
+| `get_value` | `get` |
+| `lock_object` | `lock` |
+| `remove_head` | `delete_head` |
+| `remove_tail` | `delete_tail` |
+| `stream_list` | `get_list` |
+| `stream_map` | `get_map` |
+| `stream_ordered_map` | `get_ordered_map` |
+| `stream_ordered_set` | `get_ordered_set` |
+| `stream_queue` | `get_queue` |
+| `stream_set` | `get_set` |
+| `stream_vector` | `get_vector` |
+| `unlock_object` | `unlock` |
+| `update_key_value` | `replace` |
+| `update_value` | `replace` |
 
-```python
-set_ttl(key, hint=None, ttl=0, client_id=None, **rpc_options) -> bool
-get_ttl(key, hint=None, client_id=None, **rpc_options) -> int
-lock_object(key, hint=None, lock_type=LockType.NO_LOCK,
-            client_id=None, lock_duration=0.0, **rpc_options) -> LockStatus
-unlock_object(key, hint=None, client_id=None, **rpc_options) -> LockStatus
-```
 
-`get_ttl` returns remaining milliseconds or `-1` when the server returns no TTL. `lock_duration` is seconds and is encoded as absolute Unix seconds.
+## Errors, routing and bounds
 
-## Container creation and streaming
+KeyNotFoundError, PermissionDeniedError, InvalidArgumentError, FailedPreconditionError, UnavailableError,
+DeadlineExceededError and CancelledError map server statuses. PartialOperationError reports completed_chunks,
+completed_items and partial_result after progress; smart routing never replays it. Native asyncio cancellation
+remains asyncio.CancelledError and cancels the active RPC.
 
-```python
-create_vector(key, hint=None, values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_list(key, hint=None, values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_queue(key, hint=None, values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_set(key, hint=None, values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_map(key, hint=None, keys=None, values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_ordered_set(key, hint=None, values: list[OrderedPayload] | None = None,
-                   ttl=0, client_id=None, **rpc_options) -> KeyHintData
-create_ordered_map(key, hint=None, keys: list[OrderedPayload] | None = None,
-                   values=None, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-get_container(key, hint=None, client_id=None, **rpc_options) -> list | dict
-```
+Smart routing follows pinned Java: scalar creation/replacement/removal and reads use configured routing;
+container mutations, atomics and destructive ranges default to master then backup. The weighted
+get_and_remove_element_with_weight uses configured routing. Caller-local overrides take precedence.
+Known-target redirect and unavailable fallback allow one final attempt. Endpoint IPv6 addresses are bracketed.
+Hints preserve optional hash presence and unsigned routing bits. set_mode(None) clears the mode override.
 
-Large repeated inputs are chunked around 3.5 MiB. Map key/value counts must match. `get_container` consumes the server stream and returns decoded `Payload`/`OrderedPayload` lists or maps.
+Serialized preflight, paired map batches, one creation expiration and continuation hints apply to all clients.
+Numeric values bypass compression. GZIP/default and optional raw LZ4 use strict length > threshold.
+Transport compression is independent. Inbound/decoded byte limits are 64 MiB. No old-server protocol fallback.
+Head chunks stay in input order to preserve the server's per-request reversal across batches.
+Pivot chunks advance the anchor; preflight includes the anchor's complete encoded size.
 
-## Container reads and mutation
-
-```python
-get_head(key, hint=None, client_id=None, **rpc_options) -> bytes
-get_front(...) -> bytes                       # alias of get_head
-get_tail(key, hint=None, client_id=None, **rpc_options) -> bytes
-get_and_remove_front(...) -> bytes
-get_and_remove_tail(...) -> bytes
-get_element_at_position(key, hint=None, pos=0, type=ContainerType.UNDEFINED,
-                        client_id=None, **rpc_options) -> bytes
-get_and_remove_element_at_position(...) -> bytes
-get_element_in_range(key, hint=None, pos=0, end=0,
-                     type=ContainerType.UNDEFINED, reverse=False,
-                     client_id=None, **rpc_options) -> list | dict
-remove_head(...) -> bool
-remove_tail(...) -> bool
-remove_element_at_position(key, hint=None, pos=0, type=ContainerType.UNDEFINED,
-                           client_id=None, *, end: int | None = None, **rpc_options) -> bool
-```
-
-Removal positions use unsigned 64-bit wire bounds. `end` is sent only when it is
-greater than `pos`; omitted, equal, and reversed ends perform the existing point
-removal. Invalid encoded bounds fail before an RPC. Batch map removal preserves
-Python's `(key, hint, type, values, keys, client_id)` argument order; keys and values
-populate their corresponding wire fields.
-
-For list/vector, `pos`, `start`, and `end` are zero-based positions. For ordered structures, they are unsigned 64-bit weights. Range results are decoded from the full stream.
-
-```python
-get_value_in_container(key, element_key, hint=None, element_hint=None,
-                       client_id=None, **rpc_options) -> bytes
-exist_key_in_container(...) -> bool
-contains_container_key(...) -> bool           # alias
-get_and_delete_value_in_container(...) -> bytes
-update_value_in_container(key, element_key, value=b"", hint=None,
-                          element_hint=None, ttl=0, client_id=None,
-                          **rpc_options) -> bytes
-remove_in_container(...) -> int
-remove_from_container_by_key_value(key, hint=None, type=ContainerType.UNDEFINED,
-                                   values=None, keys=None, client_id=None,
-                                   **rpc_options) -> int
-```
-
-```python
-add_element_to_tail(key, hint=None, values=None, ttl=0, client_id=None, **rpc_options) -> bool
-add_element_to_head(...) -> bool
-add_element(key, hint=None, values=None, keys=None, ttl=0,
-            client_id=None, **rpc_options) -> int
-add_element_hash_map(...) -> int               # alias
-add_element_unordered(key, hint=None, values=None, keys=None, pos=0,
-                      ttl=0, client_id=None, **rpc_options) -> int
-add_element_ordered(key, hint=None, values=None, keys=None, pos=0,
-                    ttl=0, client_id=None, **rpc_options) -> int
-add_element_to_position_by_value(key, hint=None, pos=b"", is_before=True,
-                                 values=None, ttl=0, client_id=None,
-                                 **rpc_options) -> bool
-add_element_to_position_before(key, hint=None, pivot=b"", values=None,
-                               client_id=None, **rpc_options) -> bool
-add_element_to_position_after(...) -> bool
-```
-
-## Atomics
-
-```python
-atomic_load(key, hint=None, client_id=None, **rpc_options) -> int
-atomic_load_and_delete(key, hint=None, client_id=None, **rpc_options) -> int
-atomic_create(key, hint=None, value=0, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-atomic_store(key, hint=None, value=0, ttl=0, client_id=None, **rpc_options) -> KeyHintData
-atomic_exchange(key, hint=None, value=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_add(key, hint=None, delta=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_sub(key, hint=None, delta=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_or(key, hint=None, mask=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_and(key, hint=None, mask=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_xor(key, hint=None, mask=0, ttl=0, client_id=None, **rpc_options) -> int
-atomic_compare_and_set(key, hint=None, expected_value=0, new_value=0,
-                       ttl=0, client_id=None, **rpc_options) -> CasResult
-```
-
-## Smart routing
-
-The smart clients maintain `(NodeRole, shard) -> target` and `target -> client` mappings from coordinator updates. A present weak hash selects the shard using unsigned modulo; a missing hint advances the Java-compatible round-robin shard counter.
-
-`MASTER` and `BACKUP` select that role, `MASTER_THEN_BACKUP` falls back on `UNAVAILABLE`, and `LB_SMART` randomizes the first eligible role. Mutations use master-then-backup by default. A caller-local mode override has precedence. `FAILED_PRECONDITION` is retried only when the trailer names a known `x-fastcache-route` target.
-
-## Exceptions
-
-All client exceptions inherit `HurriCacheError`:
-
-- `KeyNotFoundError`
-- `PermissionDeniedError`
-- `InvalidArgumentError`
-- `DeadlineExceededError`
-- `UnavailableError`
-- `FailedPreconditionError` (`route` contains a reroute trailer when supplied)
-- `CancelledError`
-- `HurriCacheRpcError` (`method`, `code`, and `details` preserve generic gRPC context)
-
-Synchronous streaming failures and `grpc.aio` streaming failures use the same mapping. Native task cancellation remains cancellable through `grpc.aio`; callers should not suppress `asyncio.CancelledError`.
-
-## Updated parity APIs
-
-See [the count and weighted API additions](README.md#count-and-weighted-conveniences), [complete overload mappings](API_PARITY.md), and [compression field policy](README.md#compression-and-errors). All existing positional signatures and result models are retained.
-
-## Jedis adapters
-
-`hurricache.jedis.Jedis(client)` and `JedisPool(client)` accept a synchronous direct
-or smart client. `pool.get_resource()` returns a new `Jedis` sharing that client.
-`jedis.ping()` returns `"PONG"` locally without an RPC. Both wrappers support
-`with`; closing a resource or pool closes the shared underlying client, including
-when a context exits with an exception. Redis commands commented out in Java are
-not part of this adapter. Replication protobuf messages and stubs remain available;
-there is no new application-level replication API.
+Jedis/JedisPool: ping() -> 'PONG', get_resource() -> Jedis, close() and context managers share the synchronous
+client lifecycle. Replication is limited to generated messages/stubs. Live cluster/replication validation is deferred.

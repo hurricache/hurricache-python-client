@@ -62,10 +62,6 @@ class DataReplicationServiceStub:
                 '/hurricache.DataReplicationService/removeElementAtPosition',
                 request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.removeElementInRange = channel.unary_stream(
-                '/hurricache.DataReplicationService/removeElementInRange',
-                request_serializer=cache__pb2.KeyRangeRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
         self.removeFromContainerByKeyValue = channel.unary_unary(
                 '/hurricache.DataReplicationService/removeFromContainerByKeyValue',
                 request_serializer=cache__pb2.RemoveFromContainerRequest.SerializeToString,
@@ -90,46 +86,34 @@ class DataReplicationServiceStub:
                 '/hurricache.DataReplicationService/addElementToPositionByValue',
                 request_serializer=cache__pb2.AddToValRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.atomicCreate = channel.unary_unary(
-                '/hurricache.DataReplicationService/atomicCreate',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.atomicStore = channel.unary_unary(
-                '/hurricache.DataReplicationService/atomicStore',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicExchange = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicExchange',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicAdd = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicAdd',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicSub = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicSub',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicOr = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicOr',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicAnd = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicAnd',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicXor = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicXor',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
         self.atomicCompareAndSet = channel.unary_unary(
                 '/hurricache.DataReplicationService/atomicCompareAndSet',
                 request_serializer=cache__pb2.AtomicCas.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.streamReplication = channel.stream_stream(
-                '/hurricache.DataReplicationService/streamReplication',
-                request_serializer=cache__pb2.ReplicationRequest.SerializeToString,
-                response_deserializer=cache__pb2.ReplicationResponse.FromString)
 
 
 class DataReplicationServiceServicer:
@@ -208,12 +192,6 @@ class DataReplicationServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeElementInRange(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def removeFromContainerByKeyValue(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -245,18 +223,6 @@ class DataReplicationServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def addElementToPositionByValue(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicCreate(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicStore(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -299,12 +265,6 @@ class DataReplicationServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def atomicCompareAndSet(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def streamReplication(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -373,11 +333,6 @@ def add_DataReplicationServiceServicer_to_server(servicer, server):
                     request_deserializer=cache__pb2.KeyPositionRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
-            'removeElementInRange': grpc.unary_stream_rpc_method_handler(
-                    servicer.removeElementInRange,
-                    request_deserializer=cache__pb2.KeyRangeRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
             'removeFromContainerByKeyValue': grpc.unary_unary_rpc_method_handler(
                     servicer.removeFromContainerByKeyValue,
                     request_deserializer=cache__pb2.RemoveFromContainerRequest.FromString,
@@ -408,55 +363,40 @@ def add_DataReplicationServiceServicer_to_server(servicer, server):
                     request_deserializer=cache__pb2.AddToValRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
-            'atomicCreate': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicCreate,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
-            'atomicStore': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicStore,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
             'atomicExchange': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicExchange,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicAdd': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicAdd,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicSub': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicSub,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicOr': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicOr,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicAnd': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicAnd,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicXor': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicXor,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
             'atomicCompareAndSet': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicCompareAndSet,
                     request_deserializer=cache__pb2.AtomicCas.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
-            'streamReplication': grpc.stream_stream_rpc_method_handler(
-                    servicer.streamReplication,
-                    request_deserializer=cache__pb2.ReplicationRequest.FromString,
-                    response_serializer=cache__pb2.ReplicationResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -784,32 +724,6 @@ class DataReplicationService:
             metadata)
 
     @staticmethod
-    def removeElementInRange(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/hurricache.DataReplicationService/removeElementInRange',
-            cache__pb2.KeyRangeRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
     def removeFromContainerByKeyValue(request,
             target,
             options=(),
@@ -966,58 +880,6 @@ class DataReplicationService:
             metadata)
 
     @staticmethod
-    def atomicCreate(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.DataReplicationService/atomicCreate',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def atomicStore(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.DataReplicationService/atomicStore',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
     def atomicExchange(request,
             target,
             options=(),
@@ -1032,7 +894,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicExchange',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1058,7 +920,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicAdd',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1084,7 +946,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicSub',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1110,7 +972,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicOr',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1136,7 +998,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicAnd',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1162,7 +1024,7 @@ class DataReplicationService:
             request,
             target,
             '/hurricache.DataReplicationService/atomicXor',
-            cache__pb2.AtomicCreate.SerializeToString,
+            cache__pb2.CreateRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
             channel_credentials,
@@ -1190,32 +1052,6 @@ class DataReplicationService:
             '/hurricache.DataReplicationService/atomicCompareAndSet',
             cache__pb2.AtomicCas.SerializeToString,
             cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def streamReplication(request_iterator,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_stream(
-            request_iterator,
-            target,
-            '/hurricache.DataReplicationService/streamReplication',
-            cache__pb2.ReplicationRequest.SerializeToString,
-            cache__pb2.ReplicationResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1298,24 +1134,28 @@ class HurriCacheGrpcServiceStub:
                 '/hurricache.HurriCacheGrpcService/getHead',
                 request_serializer=cache__pb2.GetRequest.SerializeToString,
                 response_deserializer=cache__pb2.ValueResponse.FromString)
-        self.getValueInContainer = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/getValueInContainer',
+        self.getValueInContainerByKey = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/getValueInContainerByKey',
                 request_serializer=cache__pb2.ContainerGetRequest.SerializeToString,
                 response_deserializer=cache__pb2.ValueResponse.FromString)
-        self.existKeyInContainer = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/existKeyInContainer',
+        self.getElementAtPosition = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/getElementAtPosition',
+                request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
+        self.existInContainerByKey = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/existInContainerByKey',
                 request_serializer=cache__pb2.ContainerGetRequest.SerializeToString,
                 response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.getAndRemoveFront = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/getAndRemoveFront',
+        self.getAndDeleteHead = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/getAndDeleteHead',
                 request_serializer=cache__pb2.GetRequest.SerializeToString,
                 response_deserializer=cache__pb2.ValueResponse.FromString)
-        self.getAndRemoveTail = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/getAndRemoveTail',
+        self.getAndDeleteTail = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/getAndDeleteTail',
                 request_serializer=cache__pb2.GetRequest.SerializeToString,
                 response_deserializer=cache__pb2.ValueResponse.FromString)
-        self.getAndRemoveElementAtPosition = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/getAndRemoveElementAtPosition',
+        self.getAndDeleteElementAtPosition = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/getAndDeleteElementAtPosition',
                 request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
                 response_deserializer=cache__pb2.ValueResponse.FromString)
         self.getAndDeleteValueInContainer = channel.unary_unary(
@@ -1326,32 +1166,32 @@ class HurriCacheGrpcServiceStub:
                 '/hurricache.HurriCacheGrpcService/updateValueInContainer',
                 request_serializer=cache__pb2.UpdateContainerRequest.SerializeToString,
                 response_deserializer=cache__pb2.UpdateValueResponse.FromString)
-        self.getElementAtPosition = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/getElementAtPosition',
-                request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
-                response_deserializer=cache__pb2.ValueResponse.FromString)
-        self.getElementInRange = channel.unary_stream(
-                '/hurricache.HurriCacheGrpcService/getElementInRange',
+        self.getElementsInRange = channel.unary_stream(
+                '/hurricache.HurriCacheGrpcService/getElementsInRange',
                 request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
                 response_deserializer=cache__pb2.BatchValueResponse.FromString)
-        self.removeHead = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/removeHead',
-                request_serializer=cache__pb2.GetRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.removeTail = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/removeTail',
-                request_serializer=cache__pb2.GetRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.removeElementAtPosition = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/removeElementAtPosition',
+        self.getAndDeleteElementsInRange = channel.unary_stream(
+                '/hurricache.HurriCacheGrpcService/getAndDeleteElementsInRange',
                 request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
-                response_deserializer=cache__pb2.BoolResponse.FromString)
-        self.removeFromContainerByKeyValue = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/removeFromContainerByKeyValue',
+                response_deserializer=cache__pb2.BatchValueResponse.FromString)
+        self.deleteHead = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/deleteHead',
+                request_serializer=cache__pb2.GetRequest.SerializeToString,
+                response_deserializer=cache__pb2.IntResponse.FromString)
+        self.deleteTail = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/deleteTail',
+                request_serializer=cache__pb2.GetRequest.SerializeToString,
+                response_deserializer=cache__pb2.IntResponse.FromString)
+        self.deleteElementAtPosition = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/deleteElementAtPosition',
+                request_serializer=cache__pb2.KeyPositionRequest.SerializeToString,
+                response_deserializer=cache__pb2.IntResponse.FromString)
+        self.deleteFromContainerByKeyValue = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/deleteFromContainerByKeyValue',
                 request_serializer=cache__pb2.RemoveFromContainerRequest.SerializeToString,
                 response_deserializer=cache__pb2.IntResponse.FromString)
-        self.removeInContainer = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/removeInContainer',
+        self.deleteFromContainerByKey = channel.unary_unary(
+                '/hurricache.HurriCacheGrpcService/deleteFromContainerByKey',
                 request_serializer=cache__pb2.ContainerGetRequest.SerializeToString,
                 response_deserializer=cache__pb2.IntResponse.FromString)
         self.addElementToTail = channel.unary_unary(
@@ -1370,46 +1210,30 @@ class HurriCacheGrpcServiceStub:
                 '/hurricache.HurriCacheGrpcService/addElementToPositionByValue',
                 request_serializer=cache__pb2.AddToValRequest.SerializeToString,
                 response_deserializer=cache__pb2.IntResponse.FromString)
-        self.atomicLoad = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/atomicLoad',
-                request_serializer=cache__pb2.GetRequest.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
-        self.atomicLoadAndDelete = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/atomicLoadAndDelete',
-                request_serializer=cache__pb2.GetRequest.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
-        self.atomicCreate = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/atomicCreate',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.KeyHintResponse.FromString)
-        self.atomicStore = channel.unary_unary(
-                '/hurricache.HurriCacheGrpcService/atomicStore',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.KeyHintResponse.FromString)
         self.atomicExchange = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicExchange',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicAdd = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicAdd',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicSub = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicSub',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicOr = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicOr',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicAnd = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicAnd',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicXor = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicXor',
-                request_serializer=cache__pb2.AtomicCreate.SerializeToString,
-                response_deserializer=cache__pb2.AtomicValue.FromString)
+                request_serializer=cache__pb2.CreateRequest.SerializeToString,
+                response_deserializer=cache__pb2.ValueResponse.FromString)
         self.atomicCompareAndSet = channel.unary_unary(
                 '/hurricache.HurriCacheGrpcService/atomicCompareAndSet',
                 request_serializer=cache__pb2.AtomicCas.SerializeToString,
@@ -1425,18 +1249,15 @@ class HurriCacheGrpcServiceServicer:
     def lockObject(self, request, context):
         """--------------------------------------------------------------------------
         Lock Management
-        Applicability: All object and key types
+        Supported targets: ALL types (Scalar, VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET)
         --------------------------------------------------------------------------
-
-        [ALL] Acquires an explicit lock on an object by key.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def unlockObject(self, request, context):
-        """[ALL] Releases a previously acquired lock.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -1444,18 +1265,15 @@ class HurriCacheGrpcServiceServicer:
     def setTtl(self, request, context):
         """--------------------------------------------------------------------------
         TTL Management
-        Applicability: All object and key types
+        Supported targets: ALL types
         --------------------------------------------------------------------------
-
-        [ALL] Sets or updates the TTL for a key.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getTtl(self, request, context):
-        """[ALL] Returns the remaining TTL for a key.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -1463,46 +1281,39 @@ class HurriCacheGrpcServiceServicer:
     def createKeyValue(self, request, context):
         """--------------------------------------------------------------------------
         Key-Value Operations (Basic operations)
-        Applicability: SCALAR VALUE
+        Supported targets: SCALAR VALUE
         --------------------------------------------------------------------------
-
-        [VALUE] Creates a new scalar entry. Returns KeyHint.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getValue(self, request, context):
-        """[VALUE] Returns a scalar value by key.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getAndDeleteValue(self, request, context):
-        """[VALUE] Atomically reads the value and deletes the key (Get-and-Delete).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def existKey(self, request, context):
-        """[ALL] Checks for key existence without reading the body.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def updateValue(self, request, context):
-        """[VALUE] Updates an existing scalar value.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def remove(self, request, context):
-        """[ALL] Completely removes the key and associated object/container from memory.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -1510,284 +1321,213 @@ class HurriCacheGrpcServiceServicer:
     def createContainer(self, request, context):
         """--------------------------------------------------------------------------
         Container Management & Streaming
-        Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+        Supported targets: VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET
         --------------------------------------------------------------------------
-
-        [CONTAINERS] Initializes a new container (LIST, VECTOR, QUEUE, SET, ORDERED_SET, MAP, ORDERED_MAP).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getContainer(self, request, context):
-        """[CONTAINERS] Streaming export of elements in batches.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getSize(self, request, context):
-        """[CONTAINERS / VALUE] Returns element count in a container or string length.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getTail(self, request, context):
         """--------------------------------------------------------------------------
-        Boundary Reads
-        Applicability: LIST, VECTOR, QUEUE
+        Boundary & Positional Reads
+        Supported targets: VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET
         --------------------------------------------------------------------------
-
-        [LIST, VECTOR, QUEUE] Returns the last element (Back / Tail).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getHead(self, request, context):
-        """[LIST, VECTOR, QUEUE] Returns the first element/queue head (Front / Head / Peek).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def getValueInContainer(self, request, context):
-        """[MAP, ORDERED MAP]
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def existKeyInContainer(self, request, context):
-        """[MAP, ORDERED MAP, SET]
-        Checks for key presence inside the container.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def getAndRemoveFront(self, request, context):
-        """--------------------------------------------------------------------------
-        Pop Operations (Extraction with removal)
-        Applicability: LIST, VECTOR, QUEUE, ORDERED_SET
-        --------------------------------------------------------------------------
-
-        [LIST, VECTOR, QUEUE] Atomically extracts and removes the first element (Pop Front / Dequeue).
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def getAndRemoveTail(self, request, context):
-        """[LIST, VECTOR] Atomically extracts and removes the last element (Pop Back).
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def getAndRemoveElementAtPosition(self, request, context):
-        """[LIST, VECTOR, ORDERED_SET] Extracts and removes 1 element:
-        - LIST / VECTOR: by 0-based index.
-        - ORDERED_SET: removes all elements matching the exact uint64 weight.
-        - ORDERED_MAP: removes all elements matching the exact uint64 weight.
-        - QUEUE / SET: Not supported.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def getAndDeleteValueInContainer(self, request, context):
-        """Map and OrderedMap
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def updateValueInContainer(self, request, context):
-        """All containers
-        """
+    def getValueInContainerByKey(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def getElementAtPosition(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def existInContainerByKey(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def getAndDeleteHead(self, request, context):
         """--------------------------------------------------------------------------
-        Positional & Range Reads
-        Applicability: LIST, VECTOR, ORDERED_SET
+        Pop Operations (Extraction with removal)
+        Supported targets: VECTOR, LIST, QUEUE, ORDERED_SET, MAP, ORDERED_MAP
         --------------------------------------------------------------------------
-
-        Point element read:
-        - [LIST, VECTOR]: access by 0-based index `pos`.
-        - [ORDERED_SET]: access by exact uint64 weight in O(log N).
-        - [QUEUE, SET, ORDERED_MAP]: NOT supported (INVALID_ARGUMENT).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def getElementInRange(self, request, context):
-        """Streaming read of element range:
-        - [LIST, VECTOR]: selection by index range [start..end].
-        - [ORDERED_SET]: selection by uint64 weight range [min_weight..max_weight].
-        - [ORDERED_MAP]: selection by uint64 weight range [min_weight..max_weight].
-        - [QUEUE, SET, MAP]: NOT supported (INVALID_ARGUMENT).
-        """
+    def getAndDeleteTail(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeHead(self, request, context):
+    def getAndDeleteElementAtPosition(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def getAndDeleteValueInContainer(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def updateValueInContainer(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def getElementsInRange(self, request, context):
         """--------------------------------------------------------------------------
-        Deletion Operations (Removing elements from containers)
-        Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+        Range Reads
+        Supported targets: VECTOR, LIST, ORDERED_MAP, ORDERED_SET
         --------------------------------------------------------------------------
-
-        [LIST, VECTOR, QUEUE] Removes the first element without returning a value (Pop Front).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeTail(self, request, context):
-        """[LIST, VECTOR] Removes the last element without returning a value (Pop Back).
+    def getAndDeleteElementsInRange(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def deleteHead(self, request, context):
+        """--------------------------------------------------------------------------
+        Deletion Operations
+        Supported targets: VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET
+        --------------------------------------------------------------------------
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeElementAtPosition(self, request, context):
-        """[LIST, VECTOR, ORDERED_SET] Removes element by index (LIST/VECTOR) or uint64 weight (ORDERED_SET).
-        """
+    def deleteTail(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeFromContainerByKeyValue(self, request, context):
-        """[CONTAINERS] Specialized element removal by value.
-        """
+    def deleteElementAtPosition(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def removeInContainer(self, request, context):
-        """Map, Ordered Map, Set, Ordered Set containers by key
-        """
+    def deleteFromContainerByKeyValue(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def deleteFromContainerByKey(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def addElementToTail(self, request, context):
         """--------------------------------------------------------------------------
-        Insertion Operations (Addition and insertion)
-        Applicability: LIST, VECTOR, QUEUE, SET, ORDERED_SET
+        Insertion Operations
+        Supported targets: VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET
         --------------------------------------------------------------------------
-
-        [LIST, VECTOR, QUEUE] Adds an element to the end (Push Back / Enqueue).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def addElementToHead(self, request, context):
-        """[LIST, VECTOR] Adds an element to the beginning (Push Front). Forbidden for QUEUE.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def addElement(self, request, context):
-        """[LIST, VECTOR, SET, ORDERED_SET, ORDERED_MAP, MAP] Adds elements to sets (accounts for weight in ORDERED_SET).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def addElementToPositionByValue(self, request, context):
-        """[LIST, VECTOR] Inserts an element relative to another value (Insert Before/After).
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicLoad(self, request, context):
-        """--------------------------------------------------------------------------
-        Atomic Primitives (Atomic Lock-Free operations)
-        Applicability: ATOMIC SCALAR TYPES
-        --------------------------------------------------------------------------
-
-        [ATOMIC] Atomic value read.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicLoadAndDelete(self, request, context):
-        """[ATOMIC] Read and clear/delete atomic value.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicCreate(self, request, context):
-        """[ATOMIC] Initialize an atomic object.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def atomicStore(self, request, context):
-        """[ATOMIC] Write a new value (Store).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicExchange(self, request, context):
-        """[ATOMIC] Atomic exchange (Swap) — writes new value, returns old value.
+        """--------------------------------------------------------------------------
+        Atomic Primitives (Atomic Lock-Free operations)
+        Supported targets: SCALAR VALUES (INT and DOUBLE; containers are not supported)
+        --------------------------------------------------------------------------
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicAdd(self, request, context):
-        """[ATOMIC] Increment (Fetch-and-Add).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicSub(self, request, context):
-        """[ATOMIC] Decrement (Fetch-and-Sub).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicOr(self, request, context):
-        """[ATOMIC] Bitwise OR.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicAnd(self, request, context):
-        """[ATOMIC] Bitwise AND.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicXor(self, request, context):
-        """[ATOMIC] Bitwise XOR.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def atomicCompareAndSet(self, request, context):
-        """[ATOMIC] Compare-And-Swap (CAS).
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -1870,28 +1610,33 @@ def add_HurriCacheGrpcServiceServicer_to_server(servicer, server):
                     request_deserializer=cache__pb2.GetRequest.FromString,
                     response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
-            'getValueInContainer': grpc.unary_unary_rpc_method_handler(
-                    servicer.getValueInContainer,
+            'getValueInContainerByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.getValueInContainerByKey,
                     request_deserializer=cache__pb2.ContainerGetRequest.FromString,
                     response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
-            'existKeyInContainer': grpc.unary_unary_rpc_method_handler(
-                    servicer.existKeyInContainer,
+            'getElementAtPosition': grpc.unary_unary_rpc_method_handler(
+                    servicer.getElementAtPosition,
+                    request_deserializer=cache__pb2.KeyPositionRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
+            ),
+            'existInContainerByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.existInContainerByKey,
                     request_deserializer=cache__pb2.ContainerGetRequest.FromString,
                     response_serializer=cache__pb2.BoolResponse.SerializeToString,
             ),
-            'getAndRemoveFront': grpc.unary_unary_rpc_method_handler(
-                    servicer.getAndRemoveFront,
+            'getAndDeleteHead': grpc.unary_unary_rpc_method_handler(
+                    servicer.getAndDeleteHead,
                     request_deserializer=cache__pb2.GetRequest.FromString,
                     response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
-            'getAndRemoveTail': grpc.unary_unary_rpc_method_handler(
-                    servicer.getAndRemoveTail,
+            'getAndDeleteTail': grpc.unary_unary_rpc_method_handler(
+                    servicer.getAndDeleteTail,
                     request_deserializer=cache__pb2.GetRequest.FromString,
                     response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
-            'getAndRemoveElementAtPosition': grpc.unary_unary_rpc_method_handler(
-                    servicer.getAndRemoveElementAtPosition,
+            'getAndDeleteElementAtPosition': grpc.unary_unary_rpc_method_handler(
+                    servicer.getAndDeleteElementAtPosition,
                     request_deserializer=cache__pb2.KeyPositionRequest.FromString,
                     response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
@@ -1905,38 +1650,38 @@ def add_HurriCacheGrpcServiceServicer_to_server(servicer, server):
                     request_deserializer=cache__pb2.UpdateContainerRequest.FromString,
                     response_serializer=cache__pb2.UpdateValueResponse.SerializeToString,
             ),
-            'getElementAtPosition': grpc.unary_unary_rpc_method_handler(
-                    servicer.getElementAtPosition,
-                    request_deserializer=cache__pb2.KeyPositionRequest.FromString,
-                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
-            ),
-            'getElementInRange': grpc.unary_stream_rpc_method_handler(
-                    servicer.getElementInRange,
+            'getElementsInRange': grpc.unary_stream_rpc_method_handler(
+                    servicer.getElementsInRange,
                     request_deserializer=cache__pb2.KeyPositionRequest.FromString,
                     response_serializer=cache__pb2.BatchValueResponse.SerializeToString,
             ),
-            'removeHead': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeHead,
-                    request_deserializer=cache__pb2.GetRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
-            'removeTail': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeTail,
-                    request_deserializer=cache__pb2.GetRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
-            ),
-            'removeElementAtPosition': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeElementAtPosition,
+            'getAndDeleteElementsInRange': grpc.unary_stream_rpc_method_handler(
+                    servicer.getAndDeleteElementsInRange,
                     request_deserializer=cache__pb2.KeyPositionRequest.FromString,
-                    response_serializer=cache__pb2.BoolResponse.SerializeToString,
+                    response_serializer=cache__pb2.BatchValueResponse.SerializeToString,
             ),
-            'removeFromContainerByKeyValue': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeFromContainerByKeyValue,
+            'deleteHead': grpc.unary_unary_rpc_method_handler(
+                    servicer.deleteHead,
+                    request_deserializer=cache__pb2.GetRequest.FromString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
+            ),
+            'deleteTail': grpc.unary_unary_rpc_method_handler(
+                    servicer.deleteTail,
+                    request_deserializer=cache__pb2.GetRequest.FromString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
+            ),
+            'deleteElementAtPosition': grpc.unary_unary_rpc_method_handler(
+                    servicer.deleteElementAtPosition,
+                    request_deserializer=cache__pb2.KeyPositionRequest.FromString,
+                    response_serializer=cache__pb2.IntResponse.SerializeToString,
+            ),
+            'deleteFromContainerByKeyValue': grpc.unary_unary_rpc_method_handler(
+                    servicer.deleteFromContainerByKeyValue,
                     request_deserializer=cache__pb2.RemoveFromContainerRequest.FromString,
                     response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
-            'removeInContainer': grpc.unary_unary_rpc_method_handler(
-                    servicer.removeInContainer,
+            'deleteFromContainerByKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.deleteFromContainerByKey,
                     request_deserializer=cache__pb2.ContainerGetRequest.FromString,
                     response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
@@ -1960,55 +1705,35 @@ def add_HurriCacheGrpcServiceServicer_to_server(servicer, server):
                     request_deserializer=cache__pb2.AddToValRequest.FromString,
                     response_serializer=cache__pb2.IntResponse.SerializeToString,
             ),
-            'atomicLoad': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicLoad,
-                    request_deserializer=cache__pb2.GetRequest.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
-            ),
-            'atomicLoadAndDelete': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicLoadAndDelete,
-                    request_deserializer=cache__pb2.GetRequest.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
-            ),
-            'atomicCreate': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicCreate,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.KeyHintResponse.SerializeToString,
-            ),
-            'atomicStore': grpc.unary_unary_rpc_method_handler(
-                    servicer.atomicStore,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.KeyHintResponse.SerializeToString,
-            ),
             'atomicExchange': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicExchange,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicAdd': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicAdd,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicSub': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicSub,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicOr': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicOr,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicAnd': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicAnd,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicXor': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicXor,
-                    request_deserializer=cache__pb2.AtomicCreate.FromString,
-                    response_serializer=cache__pb2.AtomicValue.SerializeToString,
+                    request_deserializer=cache__pb2.CreateRequest.FromString,
+                    response_serializer=cache__pb2.ValueResponse.SerializeToString,
             ),
             'atomicCompareAndSet': grpc.unary_unary_rpc_method_handler(
                     servicer.atomicCompareAndSet,
@@ -2421,7 +2146,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def getValueInContainer(request,
+    def getValueInContainerByKey(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2434,7 +2159,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/getValueInContainer',
+            '/hurricache.HurriCacheGrpcService/getValueInContainerByKey',
             cache__pb2.ContainerGetRequest.SerializeToString,
             cache__pb2.ValueResponse.FromString,
             options,
@@ -2447,7 +2172,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def existKeyInContainer(request,
+    def getElementAtPosition(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2460,7 +2185,33 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/existKeyInContainer',
+            '/hurricache.HurriCacheGrpcService/getElementAtPosition',
+            cache__pb2.KeyPositionRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata)
+
+    @staticmethod
+    def existInContainerByKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/hurricache.HurriCacheGrpcService/existInContainerByKey',
             cache__pb2.ContainerGetRequest.SerializeToString,
             cache__pb2.BoolResponse.FromString,
             options,
@@ -2473,7 +2224,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def getAndRemoveFront(request,
+    def getAndDeleteHead(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2486,7 +2237,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/getAndRemoveFront',
+            '/hurricache.HurriCacheGrpcService/getAndDeleteHead',
             cache__pb2.GetRequest.SerializeToString,
             cache__pb2.ValueResponse.FromString,
             options,
@@ -2499,7 +2250,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def getAndRemoveTail(request,
+    def getAndDeleteTail(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2512,7 +2263,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/getAndRemoveTail',
+            '/hurricache.HurriCacheGrpcService/getAndDeleteTail',
             cache__pb2.GetRequest.SerializeToString,
             cache__pb2.ValueResponse.FromString,
             options,
@@ -2525,7 +2276,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def getAndRemoveElementAtPosition(request,
+    def getAndDeleteElementAtPosition(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2538,7 +2289,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/getAndRemoveElementAtPosition',
+            '/hurricache.HurriCacheGrpcService/getAndDeleteElementAtPosition',
             cache__pb2.KeyPositionRequest.SerializeToString,
             cache__pb2.ValueResponse.FromString,
             options,
@@ -2603,33 +2354,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def getElementAtPosition(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/getElementAtPosition',
-            cache__pb2.KeyPositionRequest.SerializeToString,
-            cache__pb2.ValueResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def getElementInRange(request,
+    def getElementsInRange(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2642,7 +2367,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/getElementInRange',
+            '/hurricache.HurriCacheGrpcService/getElementsInRange',
             cache__pb2.KeyPositionRequest.SerializeToString,
             cache__pb2.BatchValueResponse.FromString,
             options,
@@ -2655,7 +2380,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def removeHead(request,
+    def getAndDeleteElementsInRange(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2665,64 +2390,12 @@ class HurriCacheGrpcService:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(
+        return grpc.experimental.unary_stream(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/removeHead',
-            cache__pb2.GetRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def removeTail(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/removeTail',
-            cache__pb2.GetRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def removeElementAtPosition(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/removeElementAtPosition',
+            '/hurricache.HurriCacheGrpcService/getAndDeleteElementsInRange',
             cache__pb2.KeyPositionRequest.SerializeToString,
-            cache__pb2.BoolResponse.FromString,
+            cache__pb2.BatchValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -2733,7 +2406,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def removeFromContainerByKeyValue(request,
+    def deleteHead(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2746,7 +2419,85 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/removeFromContainerByKeyValue',
+            '/hurricache.HurriCacheGrpcService/deleteHead',
+            cache__pb2.GetRequest.SerializeToString,
+            cache__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata)
+
+    @staticmethod
+    def deleteTail(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/hurricache.HurriCacheGrpcService/deleteTail',
+            cache__pb2.GetRequest.SerializeToString,
+            cache__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata)
+
+    @staticmethod
+    def deleteElementAtPosition(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/hurricache.HurriCacheGrpcService/deleteElementAtPosition',
+            cache__pb2.KeyPositionRequest.SerializeToString,
+            cache__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata)
+
+    @staticmethod
+    def deleteFromContainerByKeyValue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/hurricache.HurriCacheGrpcService/deleteFromContainerByKeyValue',
             cache__pb2.RemoveFromContainerRequest.SerializeToString,
             cache__pb2.IntResponse.FromString,
             options,
@@ -2759,7 +2510,7 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def removeInContainer(request,
+    def deleteFromContainerByKey(request,
             target,
             options=(),
             channel_credentials=None,
@@ -2772,7 +2523,7 @@ class HurriCacheGrpcService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/hurricache.HurriCacheGrpcService/removeInContainer',
+            '/hurricache.HurriCacheGrpcService/deleteFromContainerByKey',
             cache__pb2.ContainerGetRequest.SerializeToString,
             cache__pb2.IntResponse.FromString,
             options,
@@ -2889,110 +2640,6 @@ class HurriCacheGrpcService:
             metadata)
 
     @staticmethod
-    def atomicLoad(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/atomicLoad',
-            cache__pb2.GetRequest.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def atomicLoadAndDelete(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/atomicLoadAndDelete',
-            cache__pb2.GetRequest.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def atomicCreate(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/atomicCreate',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.KeyHintResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
-    def atomicStore(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/hurricache.HurriCacheGrpcService/atomicStore',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.KeyHintResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata)
-
-    @staticmethod
     def atomicExchange(request,
             target,
             options=(),
@@ -3007,8 +2654,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicExchange',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3033,8 +2680,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicAdd',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3059,8 +2706,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicSub',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3085,8 +2732,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicOr',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3111,8 +2758,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicAnd',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -3137,8 +2784,8 @@ class HurriCacheGrpcService:
             request,
             target,
             '/hurricache.HurriCacheGrpcService/atomicXor',
-            cache__pb2.AtomicCreate.SerializeToString,
-            cache__pb2.AtomicValue.FromString,
+            cache__pb2.CreateRequest.SerializeToString,
+            cache__pb2.ValueResponse.FromString,
             options,
             channel_credentials,
             insecure,

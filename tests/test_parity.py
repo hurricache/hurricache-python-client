@@ -17,8 +17,10 @@ from hurricache import (
     LockStatus,
     Mode,
     OrderedPayload,
+    OrderedVariant,
     PartialOperationError,
     Payload,
+    Variant,
 )
 from hurricache.grpc import batching
 from hurricache.grpc import cache_pb2 as pb
@@ -50,7 +52,7 @@ class Stub:
             response = GetMessageClass(descriptor.output_type)()
             fields = response.DESCRIPTOR.fields_by_name
             if "keyHint" in fields:
-                response.keyHint.CopyFrom(pb.KeyHint(week_hash=0xFFFFFFFF, strong_hash=2))
+                response.keyHint.CopyFrom(pb.KeyHint(weak_hash=0xFFFFFFFF, strong_hash=2))
             if "size" in fields:
                 response.size = sum(len(getattr(request, f)) for f in ("value_unordered", "value_ordered", "values", "keys", "value") if hasattr(request, f)) or 1
                 if len(self.calls) == self.reject_at:
@@ -73,7 +75,10 @@ class Stub:
                     if self.shape == "ordered_map":
                         response.key_ordered.append(create_ordered_key(OrderedPayload(b"entry", 1)))
                 else:
-                    response.value_unordered.CopyFrom(create_value(b"v"))
+                    response.value_unordered.CopyFrom(create_value(7 if name.startswith("atomic") else b"v"))
+            if "expected" in fields:
+                response.expected.value_unordered.CopyFrom(create_value(7))
+                response.expected.keyHint.CopyFrom(pb.KeyHint(weak_hash=0xFFFFFFFF, strong_hash=2))
             return response
 
         if descriptor.server_streaming:
@@ -136,17 +141,17 @@ def operation_arguments(name):
     kwargs = {}
     signature = inspect.signature(getattr(HurriCacheClient, name))
     params = signature.parameters
-    if "element_key" in params:
-        kwargs["element_key"] = b"entry"
+    if "element_key" in params and name not in ("remove", "contains_key"):
+        kwargs["element_key"] = OrderedPayload(b"entry", 7) if name in ("update_order", "increment_order") else b"entry"
     if "value" in params:
-        kwargs["value"] = 7 if name.startswith("atomic_") else b"new"
+        kwargs["value"] = 7 if name.startswith("atomic_") or name in ("exchange", "exchange_in_container") else b"new"
     if "values" in params:
         kwargs["values"] = [OrderedPayload(b"item", 7)] if name in {
             "create_ordered_set", "add_element_ordered", "add_element_ordered_set", "add_element_with_weight"
         } else [b"item"]
     if "keys" in params:
         kwargs["keys"] = [OrderedPayload(b"entry", 7)] if "ordered_map" in name else [b"entry"]
-        if name in {"add_element_ordered", "add_element_unordered", "add_element", "remove_from_container", "remove_from_container_by_key_value"}:
+        if name in {"add_element_ordered", "add_element_unordered", "add_element", "remove_from_container", "remove_from_container_by_key_and_value"}:
             kwargs.pop("keys")
     if "pivot" in params:
         kwargs["pivot"] = b"pivot"
@@ -160,9 +165,9 @@ def operation_arguments(name):
 def operation_shape(name):
     if "ordered_map" in name:
         return "ordered_map"
-    if "range_ordered" in name or name == "stream_ordered_set":
+    if "range_ordered" in name or name in ("stream_ordered_set", "get_ordered_set"):
         return "ordered_set"
-    if name == "stream_map":
+    if name in ("stream_map", "get_map"):
         return "map"
     return "list"
 
@@ -180,30 +185,30 @@ async def test_every_operation(client_form, name):
     rpc = pb.DESCRIPTOR.services_by_name["HurriCacheGrpcService"].methods_by_name[stub.calls[-1][0]]
     if rpc.server_streaming:
         expected = {
-            "list": [Payload(b"v")], "ordered_set": [OrderedPayload(b"v", 1)],
-            "map": {Payload(b"entry"): Payload(b"v")},
-            "ordered_map": {OrderedPayload(b"entry", 1): Payload(b"v")},
+            "list": [Variant.of_bytes(b"v")], "ordered_set": [OrderedVariant.of_bytes(b"v", 1)],
+            "map": {Payload(b"entry"): Variant.of_bytes(b"v")},
+            "ordered_map": {OrderedPayload(b"entry", 1): Variant.of_bytes(b"v")},
         }
         assert result == expected[stub.shape]
-    elif name.startswith("create_") or name in ("atomic_create", "atomic_store"):
+    elif rpc.output_type.name == "KeyHintResponse":
         assert result == KeyHintData(0xFFFFFFFF, 2)
     elif name == "get_ttl":
         assert result == -1
-    elif name in ("lock_object", "unlock_object"):
+    elif name in ("lock_object", "unlock_object", "lock", "unlock"):
         assert result == LockStatus.OK
-    elif name == "atomic_compare_and_set":
+    elif name in ("atomic_compare_and_set", "compare_and_set", "compare_and_set_in_container"):
         assert isinstance(result, CasResult)
         assert result.hint == KeyHintData(0xFFFFFFFF, 2)
-    elif name.startswith("atomic_"):
-        assert type(result) is int and result == 0
+    elif stub.calls[-1][0].startswith("atomic"):
+        assert type(result) is int and result == 7
     elif rpc.output_type.name == "ValueResponse":
-        assert result == b"v"
-    elif name in ("update_value", "update_key_value", "update_value_in_container", "update_container_value"):
-        assert result == b"old"
-    elif rpc.output_type.name == "BoolResponse" or name in {
-        "add_element_to_head", "add_element_to_tail", "add_element_to_position_by_value",
-        "add_element_to_position_before", "add_element_to_position_after", "add_element_ordered_set",
-    }:
+        assert result == Variant.of_bytes(b"v")
+    elif rpc.output_type.name == "UpdateValueResponse":
+        if name in ("update_order", "increment_order"):
+            assert result is True
+        else:
+            assert result == Variant.of_bytes(b"old")
+    elif rpc.output_type.name == "BoolResponse":
         assert result is True
     else:
         assert type(result) is int and result == 1, (name, result)
@@ -222,11 +227,11 @@ async def test_compression_policy_and_defaults(client_form, length):
     assert not stub.calls[-1][1].value.HasField("ttl")
     for name in ["create_list", "create_vector", "create_queue", "create_set"]:
         await invoke(client, name, b"k", values=[data])
-        assert not stub.calls[-1][1].value_unordered[0].HasField("compressionInfo")
+        assert stub.calls[-1][1].value_unordered[0].HasField("compressionInfo") == (length > 8)
     await invoke(client, "create_map", b"k", keys=[data], values=[data])
     request = stub.calls[-1][1]
-    assert not request.key_unordered[0].HasField("compressionInfo")
-    assert not request.value_unordered[0].HasField("compressionInfo")
+    assert request.key_unordered[0].HasField("compressionInfo") == (length > 8)
+    assert request.value_unordered[0].HasField("compressionInfo") == (length > 8)
     assert request.value_unordered[0].ttl > int(time.time() * 1000)
     await invoke(client, "create_ordered_map", b"k", keys=[OrderedPayload(data, 1)], values=[data])
     assert stub.calls[-1][1].value_unordered[0].HasField("compressionInfo") == (length > 8)
@@ -234,34 +239,34 @@ async def test_compression_policy_and_defaults(client_form, length):
     ordered = stub.calls[-1][1].value_ordered[0]
     assert ordered.HasField("compressionInfo") == (length > 8)
     assert ordered.ttl > int(time.time() * 1000)
-    for name in ["add_element_to_tail", "add_element_to_head", "add_element_to_position"]:
+    for name in ["push_tail", "push_head", "insert_at"]:
         await invoke(client, name, b"k", values=[data])
-        assert not stub.calls[-1][1].value_unordered[0].HasField("compressionInfo")
-    await invoke(client, "get_value_in_container", b"k", data)
+        assert stub.calls[-1][1].value_unordered[0].HasField("compressionInfo") == (length > 8)
+    await invoke(client, "get_in_container", b"k", element_key=data)
     assert not stub.calls[-1][1].element_key.HasField("compressionInfo")
-    await invoke(client, "remove_from_container_by_key_value", b"k", keys=[data], values=[data])
+    await invoke(client, "remove_from_container_by_key_and_value", b"k", keys=[data], values=[data])
     request = stub.calls[-1][1]
     assert request.keys[0].HasField("compressionInfo") == (length > 8)
-    assert not request.values[0].HasField("compressionInfo")
+    assert request.values[0].HasField("compressionInfo") == (length > 8)
 
 
 async def test_preflight_continuation_and_partial(client_form, monkeypatch):
     client, stub = client_form
     monkeypatch.setattr(batching, "MAX_RPC_SIZE", 180)
     with pytest.raises(ValueError):
-        await invoke(client, "create_list", b"k", values=[b"a", b"x" * 200])
+        await invoke(client, "create_list", b"k", values=[b"a", bytes(range(200))])
     assert not stub.calls
-    values = [bytes([i]) * 60 for i in range(6)]
+    values = [bytes(range(i, i+60)) for i in range(6)]
     await invoke(client, "create_list", b"k", values=values)
     assert stub.calls[0][0] == "createContainer"
     assert all(name == "addElementToTail" for name, _, _ in stub.calls[1:])
     assert sum(len(req.value_unordered) for _, req, _ in stub.calls) == len(values)
     assert all(req.ByteSize() <= 180 for _, req, _ in stub.calls)
-    assert all(req.key.keyHint.week_hash == 0xFFFFFFFF for _, req, _ in stub.calls[1:])
+    assert all(req.key.keyHint.weak_hash == 0xFFFFFFFF for _, req, _ in stub.calls[1:])
     stub.calls.clear()
     stub.fail_at = 2
     with pytest.raises(PartialOperationError) as caught:
-        await invoke(client, "add_element_to_tail", b"k", values=values)
+        await invoke(client, "push_tail", b"k", values=values)
     assert caught.value.completed_chunks == 1
     assert caught.value.completed_items > 0
     assert isinstance(caught.value.__cause__, UnavailableError)
@@ -281,7 +286,7 @@ async def test_one_deadline_and_lock_presence(client_form, monkeypatch):
     stub.calls.clear()
     stub.delay = 0.02
     with pytest.raises(PartialOperationError) as caught:
-        await invoke(client, "add_element_to_tail", b"k", values=[b"x" * 60] * 8, timeout=0.01)
+        await invoke(client, "push_tail", b"k", values=[b"x" * 60] * 8, timeout=0.01)
     assert isinstance(caught.value.__cause__, DeadlineExceededError)
     assert len(stub.calls) == 1
 

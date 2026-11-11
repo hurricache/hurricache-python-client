@@ -1,569 +1,283 @@
-"""Integration tests for HurriCache gRPC client against a real server.
+"""Current-protocol standalone acceptance; requires an explicitly supplied server."""
 
-Run with:
-    pytest tests/test_integration.py -v --tb=short
+import inspect
+import os
+import uuid
 
-Server must be running on 127.0.0.1:50000 without authentication.
-"""
-
-from __future__ import annotations
-
-import random
-import time
-
+import grpc
 import pytest
+from test_parity import invoke
+from test_smart_clients import Coordinator, _server
 
 from hurricache import (
+    AsyncHurriCacheClient,
+    AsyncHurriCacheSmartClient,
     HurriCacheClient,
-    HurriCacheError,
-    KeyHintData,
+    HurriCacheRpcError,
+    HurriCacheSmartClient,
     KeyNotFoundError,
-    LockStatus,
-    LockType,
     OrderedPayload,
+    OrderedVariant,
+    Payload,
+    Variant,
 )
-from hurricache.grpc import cache_pb2
+from hurricache.grpc import coordinator_pb2 as cp
+from hurricache.grpc import coordinator_pb2_grpc as cpg
 
-# ---------------------------------------------------------------------------
-# Module-level client (single connection for all tests)
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def client():
-    """Create a HurriCacheClient connected to the real server."""
-    with HurriCacheClient(host="127.0.0.1", port=50000) as c:
-        yield c
+TARGET = os.environ.get("HURRICACHE_TEST_TARGET")
+CODECS = os.environ.get("HURRICACHE_TEST_CODECS", "gzip,lz4").split(",")
+pytestmark = pytest.mark.skipif(not TARGET, reason="set HURRICACHE_TEST_TARGET after pinned standalone startup")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _unique_key(prefix: str) -> bytes:
-    """Generate a unique key for tests."""
-    suffix = f"{int(time.time()*1000000)}{random.randint(1000,9999)}"
-    return f"{prefix}_{suffix}".encode()
-
-
-def _clean(client: HurriCacheClient, key: bytes) -> None:
-    """Try to remove a key (ignore errors if it doesn't exist)."""
+@pytest.fixture(params=[(form, c) for form in ("sync", "async", "smart", "async-smart") for c in CODECS],
+                ids=lambda item: "-".join(item))
+async def live_client(request):
+    form, codec = request.param
+    if codec == "lz4":
+        pytest.importorskip("lz4.block")
+    host, port = TARGET.rsplit(":", 1)
+    options = dict(default_timeout=10, payload_compression=codec,
+                   default_client_id=77, zero_client_id_uses_default=False)
+    coordinator_server = None
+    if "smart" in form:
+        coordinator = Coordinator(cp.RoutingInfoData(max_shards=1, peerRouting=[cp.PeerRouting(
+            target=cp.Endpoint(ip=host.strip("[]"), port=int(port)), role=cp.MASTER, partitionIds=[0])]))
+        coordinator_server, coordinator_port = _server(coordinator, cpg.add_CoordinatorServiceServicer_to_server)
+        client = (AsyncHurriCacheSmartClient if form == "async-smart" else HurriCacheSmartClient)(
+            "127.0.0.1", coordinator_port, refresh_interval=60, **options)
+    else:
+        client = (AsyncHurriCacheClient if form == "async" else HurriCacheClient)(host.strip("[]"), int(port), **options)
+    keys = []
+    def key():
+        value = "python-02/" + uuid.uuid4().hex
+        keys.append(value)
+        return value
     try:
-        client.remove(key)
-    except HurriCacheError:
-        pass
+        if coordinator_server is not None:
+            await invoke(client, "wait_until_ready", 10)
+            assert coordinator.calls >= 1
+        yield client, key
+    finally:
+        try:
+            for value in keys:
+                try:
+                    await invoke(client, "remove", value)
+                except KeyNotFoundError:
+                    pass
+        finally:
+            try:
+                closed = client.close()
+                if inspect.isawaitable(closed):
+                    await closed
+            finally:
+                if coordinator_server is not None:
+                    coordinator_server.stop(0).wait()
 
 
-# ---------------------------------------------------------------------------
-# Key-Value Operations
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("value", [Variant.none(), Variant.of_bytes(b""), Variant.of_long(0),
+                                    Variant.of_double(0.0), Variant.of_double(-0.0), Variant.of_long(-(1 << 63)),
+                                    Variant.of_long((1 << 63)-1), Variant.of_double(1.25),
+                                    Variant.of_double(float("nan")), Variant.of_double(float("inf")),
+                                    Variant.of_double(-float("inf")),
+                                    Variant.of_bytes(b"x" * 4096)], ids=lambda v: v.type.name + repr(v.value)[:16])
+async def test_live_typed_scalars(live_client, value):
+    client, key = live_client
+    name = key()
+    hint = await invoke(client, "create", name, value=value, client_id=0)
+    assert await invoke(client, "get", name, hint, client_id=0) == value
+    assert await invoke(client, "replace", name, hint, value=17, client_id=0) == value
+    assert await invoke(client, "pop", name, hint, client_id=0) == Variant.of_long(17)
 
-class TestKeyValue:
-    """Tests for basic key-value operations."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_kv_key")
-        self.value = b"test_value_data"
-        yield
-        _clean(self.client, self.key)
+@pytest.mark.parametrize("family", ["list", "vector", "queue", "set", "ordered_set", "map", "ordered_map"])
+@pytest.mark.parametrize("include_none", [False, True], ids=["stored-types", "including-none"])
+async def test_live_mixed_collections(live_client, family, include_none):
+    client, key = live_client
+    name = key()
+    values = [Variant.of_bytes(b""), Variant.of_long(0), Variant.of_double(0),
+              Variant.of_long(-7), Variant.of_double(1.25), Variant.of_bytes(b"abc" * 1024)]
+    if include_none:
+        values.insert(0, Variant.none())
+    options = {"values": values}
+    if family == "ordered_set":
+        options["values"] = [OrderedVariant.of(v, i+1) for i, v in enumerate(values)]
+    elif family in ("map", "ordered_map"):
+        options["keys"] = [OrderedPayload(str(i).encode(), i+1) if family == "ordered_map" else Payload(str(i).encode())
+                           for i in range(len(values))]
+    hint = await invoke(client, "create_" + family, name, **options)
+    if family == "queue":
+        # Full queue reads are intentionally unsupported; cardinality/pop remain valid.
+        with pytest.raises(HurriCacheRpcError):
+            await invoke(client, "get_queue", name, hint)
+        assert await invoke(client, "get_size", name, hint) == len(values)
+        assert [await invoke(client, "pop_head", name, hint) for _ in values] == values
+        return
+    actual = await invoke(client, "get_" + family, name, hint)
+    if family in ("map", "ordered_map"):
+        assert actual == dict(zip(options["keys"], values))
+    elif family == "ordered_set":
+        assert actual == options["values"]
+    elif family == "set":
+        assert set(actual) == set(values)
+    else:
+        assert actual == values
 
-    def test_create_and_get(self, client):
-        hint = client.create_key_value(self.key, value=self.value)
-        assert isinstance(hint, KeyHintData)
-        retrieved = client.get_value(self.key)
-        assert retrieved == self.value
 
-    def test_get_nonexistent_raises(self, client):
+async def test_live_numeric_atomics_and_container_selectors(live_client):
+    client, key = live_client
+    for initial in (10, 10.5):
+        name = key()
+        hint = await invoke(client, "create", name, value=initial)
+        assert await invoke(client, "exchange", name, hint, value=initial) == initial
+        await invoke(client, "add", name, hint, delta=2)
+        assert (await invoke(client, "get", name, hint)).number_value() == initial + 2
+        await invoke(client, "sub", name, hint, delta=2)
+        cas = await invoke(client, "compare_and_set", name, hint, expected_value=initial, new_value=1)
+        assert cas.success
+        assert (await invoke(client, "get", name, hint)).number_value() == 1
+    for family, selector in (("map", b"entry"), ("vector", 0)):
+        name = key()
+        kwargs = {"values": [10]}
+        if family == "map":
+            kwargs["keys"] = [b"entry"]
+        hint = await invoke(client, "create_" + family, name, **kwargs)
+        assert await invoke(client, "exchange_in_container", name, hint, selector=selector, value=20) == 10
+        await invoke(client, "add_in_container", name, hint, selector=selector, delta=5)
+        result = await invoke(client, "get_in_container", name, hint, element_key=b"entry") if family == "map" else await invoke(client, "get_at", name, hint, pos=0)
+        assert result.require_long() == 25
+
+
+@pytest.mark.parametrize("ordered", [False, True])
+@pytest.mark.parametrize("initial,new", [(100, 200), (1.5, 2.5)])
+async def test_live_container_cas(live_client, ordered, initial, new):
+    client, key = live_client
+    name = key()
+    field = b"field" * 1000  # Also exercise compressed exact selectors.
+    selector = OrderedPayload(field, 10) if ordered else field
+    hint = await invoke(client, "create_ordered_map" if ordered else "create_map", name,
+                        keys=[selector], values=[initial])
+    result = await invoke(client, "compare_and_set_in_container", name, hint,
+                          selector=selector, expected_value=initial, new_value=new)
+    assert result.success and result.expected_value is None
+    assert (await invoke(client, "get_in_container", name, hint, element_key=field)).number_value() == new
+    result = await invoke(client, "compare_and_set_in_container", name, hint,
+                          selector=selector, expected_value=initial, new_value=initial)
+    assert not result.success and result.expected_value == new
+    assert type(result.expected_value) is type(new)
+    if ordered:
         with pytest.raises(KeyNotFoundError):
-            client.get_value(b"nonexistent_key_12345")
-
-    def test_update_returns_old_value(self, client):
-        client.create_key_value(self.key, value=b"old_value")
-        old = client.update_value(self.key, value=b"new_value")
-        assert old == b"old_value"
-        assert client.get_value(self.key) == b"new_value"
-
-    def test_exist_key(self, client):
-        client.create_key_value(self.key, value=b"data")
-        assert client.exist_key(self.key) is True
-        assert client.exist_key(b"nonexistent_key_12345") is False
-
-    def test_remove(self, client):
-        client.create_key_value(self.key, value=b"data")
-        assert client.remove(self.key) is True
-        with pytest.raises(KeyNotFoundError):
-            client.get_value(self.key)
-
-    def test_get_and_delete(self, client):
-        client.create_key_value(self.key, value=b"delete_me")
-        value = client.get_and_delete_value(self.key)
-        assert value == b"delete_me"
-        with pytest.raises(KeyNotFoundError):
-            client.get_value(self.key)
-
-    def test_get_with_hint(self, client):
-        hint_resp = client.create_key_value(self.key, value=b"hint_test")
-        value = client.get_value(self.key, hint=hint_resp)
-        assert value == b"hint_test"
-
-
-# ---------------------------------------------------------------------------
-# TTL Management
-# ---------------------------------------------------------------------------
-
-class TestTTL:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_ttl_key")
-        yield
-        _clean(self.client, self.key)
-
-    def test_set_ttl(self, client):
-        client.create_key_value(self.key, value=b"data")
-        result = client.set_ttl(self.key, ttl=60000)
-        assert result is True
-
-
-# ---------------------------------------------------------------------------
-# Lock Management
-# ---------------------------------------------------------------------------
-
-class TestLock:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_lock_key")
-        yield
-
-    def test_lock_and_unlock(self, client):
-        client.create_key_value(self.key, value=b"data")
-        result = client.lock_object(
-            self.key,
-            lock_type=LockType.WRITE_LOCK,
-            client_id=1,
-            lock_duration=5.0,
-        )
-        assert result is LockStatus.OK
-
-        unlock_result = client.unlock_object(self.key, client_id=1)
-        assert unlock_result is LockStatus.OK
-
-    def test_lock_with_read_lock(self, client):
-        client.create_key_value(self.key, value=b"data")
-        result = client.lock_object(
-            self.key,
-            lock_type=LockType.READ_LOCK,
-            client_id=1,
-            lock_duration=5.0,
-        )
-        assert result is LockStatus.OK
-
-    def test_lock_default_type(self, client):
-        client.create_key_value(self.key, value=b"data")
-        result = client.lock_object(self.key, client_id=1)
-        assert result is LockStatus.OK
-
-
-# ---------------------------------------------------------------------------
-# Atomic Operations
-# ---------------------------------------------------------------------------
-
-class TestAtomic:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_atomic_key")
-        yield
-        _clean(self.client, self.key)
-
-    def test_atomic_create_and_load(self, client):
-        hint = client.atomic_create(self.key, value=42)
-        assert isinstance(hint, KeyHintData)
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 42
-
-    def test_atomic_store(self, client):
-        hint = client.atomic_create(self.key, value=0)
-        hint = client.atomic_store(self.key, hint=hint, value=100)
-        assert isinstance(hint, KeyHintData)
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 100
-
-    def test_atomic_exchange(self, client):
-        hint = client.atomic_create(self.key, value=10)
-        old = client.atomic_exchange(self.key, hint=hint, value=20)
-        assert old == 10
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 20
-
-    def test_atomic_add(self, client):
-        hint = client.atomic_create(self.key, value=10)
-        old = client.atomic_add(self.key, hint=hint, delta=5)
-        assert old == 10
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 15
-
-    def test_atomic_sub(self, client):
-        hint = client.atomic_create(self.key, value=10)
-        old = client.atomic_sub(self.key, hint=hint, delta=3)
-        assert old == 10
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 7
-
-    def test_atomic_compare_and_set(self, client):
-        from hurricache import CasResult
-
-        hint = client.atomic_create(self.key, value=10)
-        result = client.atomic_compare_and_set(self.key, hint=hint, expected_value=10, new_value=20)
-        assert isinstance(result, CasResult)
-        assert result.success is True
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 20
-
-        # CAS should fail with wrong expected value
-        result = client.atomic_compare_and_set(self.key, hint=hint, expected_value=999, new_value=30)
-        assert isinstance(result, CasResult)
-        assert result.success is False
-        assert result.expected_value == 20
-
-    def test_atomic_load_and_delete(self, client):
-        hint = client.atomic_create(self.key, value=42)
-        val = client.atomic_load_and_delete(self.key, hint=hint)
-        assert val == 42
-
-    def test_atomic_or(self, client):
-        hint = client.atomic_create(self.key, value=0b1010)
-        old = client.atomic_or(self.key, hint=hint, mask=0b0101)
-        assert old == 0b1010
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 0b1111
-
-    def test_atomic_and(self, client):
-        hint = client.atomic_create(self.key, value=0b1111)
-        old = client.atomic_and(self.key, hint=hint, mask=0b1010)
-        assert old == 0b1111
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 0b1010
-
-    def test_atomic_xor(self, client):
-        hint = client.atomic_create(self.key, value=0b1100)
-        old = client.atomic_xor(self.key, hint=hint, mask=0b0101)
-        assert old == 0b1100
-        val = client.atomic_load(self.key, hint=hint)
-        assert val == 0b1001
-
-
-# ---------------------------------------------------------------------------
-# Container Operations
-# ---------------------------------------------------------------------------
-
-class TestContainerCreate:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_container_key")
-        self.values = [b"item1", b"item2", b"item3"]
-        yield
-        _clean(self.client, self.key)
-
-    def test_create_vector(self, client):
-        hint = client.create_vector(self.key, values=self.values)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == len(self.values)
-
-    def test_create_list(self, client):
-        hint = client.create_list(self.key, values=self.values)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == len(self.values)
-
-    def test_create_set(self, client):
-        hint = client.create_set(self.key, values=self.values)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == len(self.values)
-
-    def test_create_queue(self, client):
-        hint = client.create_queue(self.key, values=self.values)
-        assert isinstance(hint, KeyHintData)
-        # Queue: get_size returns 0, use get_head to verify
-        head = client.get_head(self.key, hint=hint)
-        assert head == self.values[0]
-
-
-class TestContainerOrderedSet:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_ordered_set")
-        yield
-        _clean(self.client, self.key)
-
-    def test_create_ordered_set(self, client):
-        values = [
-            OrderedPayload(b"low", order=1),
-            OrderedPayload(b"mid", order=2),
-            OrderedPayload(b"high", order=3),
-        ]
-        hint = client.create_ordered_set(self.key, values=values)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == len(values)
-
-    def test_create_ordered_set_empty(self, client):
-        hint = client.create_ordered_set(self.key)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == 0
-
-
-class TestContainerOrderedMap:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_ordered_map")
-        yield
-        _clean(self.client, self.key)
-
-    def test_create_ordered_map(self, client):
-        keys = [
-            OrderedPayload(b"key_low", order=1),
-            OrderedPayload(b"key_mid", order=2),
-            OrderedPayload(b"key_high", order=3),
-        ]
-        values = [b"val1", b"val2", b"val3"]
-        hint = client.create_ordered_map(self.key, keys=keys, values=values)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == len(keys)
-
-    def test_create_ordered_map_empty(self, client):
-        hint = client.create_ordered_map(self.key)
-        assert isinstance(hint, KeyHintData)
-        size = client.get_size(self.key, hint=hint)
-        assert size == 0
-
-
-class TestContainerBoundary:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_boundary_key")
-        self.values = [b"first", b"middle", b"last"]
-        yield
-        _clean(self.client, self.key)
-
-    def _setup_container(self, client):
-        hint = client.create_list(self.key, values=self.values)
-        return hint
-
-    def test_get_head(self, client):
-        hint = self._setup_container(client)
-        value = client.get_head(self.key, hint=hint)
-        assert value == b"first"
-
-    def test_get_tail(self, client):
-        hint = self._setup_container(client)
-        value = client.get_tail(self.key, hint=hint)
-        assert value == b"last"
-
-    def test_get_element_at_position(self, client):
-        hint = self._setup_container(client)
-        value = client.get_element_at_position(self.key, hint=hint, pos=1, type=cache_pb2.ContainerType.LIST)
-        assert value == b"middle"
-
-    def test_get_element_at_position_0(self, client):
-        hint = self._setup_container(client)
-        value = client.get_element_at_position(self.key, hint=hint, pos=0, type=cache_pb2.ContainerType.LIST)
-        assert value == b"first"
-
-    def test_get_element_at_position_last(self, client):
-        hint = self._setup_container(client)
-        value = client.get_element_at_position(self.key, hint=hint, pos=2, type=cache_pb2.ContainerType.LIST)
-        assert value == b"last"
-
-
-class TestContainerPop:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_pop_key")
-        self.values = [b"first", b"second", b"third"]
-        yield
-        _clean(self.client, self.key)
-
-    def test_get_and_remove_front(self, client):
-        hint = client.create_queue(self.key, values=self.values)
-        value = client.get_and_remove_front(self.key, hint=hint)
-        assert value == b"first"
-        # Queue: get_size returns 0, verify by head
-        head = client.get_head(self.key, hint=hint)
-        assert head == b"second"
-
-    def test_get_and_remove_tail(self, client):
-        hint = client.create_list(self.key, values=self.values)
-        value = client.get_and_remove_tail(self.key, hint=hint)
-        assert value == b"third"
-        size = client.get_size(self.key, hint=hint)
-        assert size == 2
-
-
-class TestContainerRemove:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_remove_key")
-        self.values = [b"first", b"second", b"third"]
-        yield
-        _clean(self.client, self.key)
-
-    def _setup_container(self, client):
-        hint = client.create_list(
-            self.key,
-            values=self.values,
-        )
-        return hint
-
-    def test_remove_head(self, client):
-        hint = self._setup_container(client)
-        result = client.remove_head(self.key, hint=hint)
-        assert result is True
-        size = client.get_size(self.key, hint=hint)
-        assert size == 2
-        head = client.get_head(self.key, hint=hint)
-        assert head == b"second"
-
-    def test_remove_tail(self, client):
-        hint = self._setup_container(client)
-        result = client.remove_tail(self.key, hint=hint)
-        assert result is True
-        size = client.get_size(self.key, hint=hint)
-        assert size == 2
-        tail = client.get_tail(self.key, hint=hint)
-        assert tail == b"second"
-
-    def test_remove_element_at_position(self, client):
-        hint = self._setup_container(client)
-        result = client.remove_element_at_position(self.key, hint=hint, pos=1, type=cache_pb2.ContainerType.LIST)
-        assert result is True
-        size = client.get_size(self.key, hint=hint)
-        assert size == 2
-
-
-class TestContainerAdd:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_add_key")
-        self.initial_values = [b"first"]
-        yield
-        _clean(self.client, self.key)
-
-    def _setup_container(self, client):
-        hint = client.create_list(
-            self.key,
-            values=self.initial_values,
-        )
-        return hint
-
-    def test_add_element_to_tail(self, client):
-        hint = self._setup_container(client)
-        result = client.add_element_to_tail(self.key, hint=hint, values=[b"second", b"third"])
-        assert result is True
-        size = client.get_size(self.key, hint=hint)
-        assert size == 3
-        tail = client.get_tail(self.key, hint=hint)
-        assert tail == b"third"
-
-    def test_add_element_to_head(self, client):
-        hint = self._setup_container(client)
-        result = client.add_element_to_head(self.key, hint=hint, values=[b"zero"])
-        assert result is True
-        size = client.get_size(self.key, hint=hint)
-        assert size == 2
-        head = client.get_head(self.key, hint=hint)
-        assert head == b"zero"
-
-    def test_add_element(self, client):
-        hint = self._setup_container(client)
-        count = client.add_element(self.key, hint=hint, values=[b"new1", b"new2"])
-        assert count == 2
-
-
-class TestContainerGetAndDeleteInContainer:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-        self.key = _unique_key("test_map_key")
-        self.keys = [b"key1", b"key2"]
-        self.values = [b"value1", b"value2"]
-        yield
-        _clean(self.client, self.key)
-
-    def _setup_container(self, client):
-        hint = client.create_map(self.key, keys=self.keys, values=self.values)
-        return hint
-
-    def test_get_value_in_container(self, client):
-        hint = self._setup_container(client)
-        value = client.get_value_in_container(self.key, b"key1", hint=hint)
-        assert value == b"value1"
-
-    def test_exist_key_in_container(self, client):
-        hint = self._setup_container(client)
-        assert client.exist_key_in_container(self.key, b"key1", hint=hint) is True
-        assert client.exist_key_in_container(self.key, b"nonexistent", hint=hint) is False
-
-    def test_update_value_in_container(self, client):
-        hint = self._setup_container(client)
-        old = client.update_value_in_container(self.key, b"key1", b"updated", hint=hint)
-        assert old == b"value1"
-        value = client.get_value_in_container(self.key, b"key1", hint=hint)
-        assert value == b"updated"
-
-    def test_get_and_delete_value_in_container(self, client):
-        hint = self._setup_container(client)
-        value = client.get_and_delete_value_in_container(self.key, b"key1", hint=hint)
-        assert value == b"value1"
-        with pytest.raises(KeyNotFoundError):
-            client.get_value_in_container(self.key, b"key1", hint=hint)
-
-    def test_remove_in_container(self, client):
-        hint = self._setup_container(client)
-        count = client.remove_in_container(self.key, b"key1", hint=hint)
-        assert count >= 0
-        with pytest.raises(KeyNotFoundError):
-            client.get_value_in_container(self.key, b"key1", hint=hint)
-
-
-# ---------------------------------------------------------------------------
-# Error Handling
-# ---------------------------------------------------------------------------
-
-class TestErrors:
-    @pytest.fixture(autouse=True)
-    def _setup(self, client):
-        self.client = client
-
-    def test_key_not_found_on_get(self, client):
-        with pytest.raises(KeyNotFoundError):
-            client.get_value(b"totally_nonexistent_key_xyz")
-
-    def test_key_not_found_on_get_and_delete(self, client):
-        with pytest.raises(KeyNotFoundError):
-            client.get_and_delete_value(b"totally_nonexistent_key_xyz")
-
-    def test_key_not_found_on_get_head(self, client):
-        with pytest.raises(KeyNotFoundError):
-            client.get_head(b"totally_nonexistent_key_xyz")
-
-    def test_key_not_found_on_get_tail(self, client):
-        with pytest.raises(KeyNotFoundError):
-            client.get_tail(b"totally_nonexistent_key_xyz")
-
-    def test_key_not_found_on_atomic_load(self, client):
-        with pytest.raises(KeyNotFoundError):
-            client.atomic_load(b"totally_nonexistent_key_xyz")
+            await invoke(client, "compare_and_set_in_container", name, hint,
+                         selector=OrderedPayload(field, 999), expected_value=new, new_value=initial)
+    with pytest.raises(KeyNotFoundError):
+        await invoke(client, "compare_and_set_in_container", name, hint, selector=b"missing",
+                     expected_value=initial, new_value=new)
+
+
+async def test_live_set_type_sensitive_equality(live_client):
+    client, key = live_client
+    name = key()
+    values = [Variant.none(), Variant.of_bytes(b""), Variant.of_long(0), Variant.of_double(0),
+              Variant.of_double(-0.0), Variant.of_double(float("nan")), Variant.of_double(float("nan")),
+              Variant.of_long(1), Variant.of_long(0x100000001)]
+    hint = await invoke(client, "create_set", name, values=values)
+    actual = await invoke(client, "get_set", name, hint)
+    assert len(actual) == len(set(values))
+    assert set(actual) == set(values)
+
+
+@pytest.mark.parametrize("value", [Variant.none(), Variant.of_bytes(b""), Variant.of_double(-0.0),
+                                    Variant.of_bytes(b"weighted" * 1024)], ids=["none", "empty", "double", "compressed"])
+@pytest.mark.parametrize("weight", [2, (1 << 64)-1])
+async def test_live_weighted_scalar_contract(live_client, value, weight):
+    client, key = live_client
+    name = key()
+    other = 3 if weight == 2 else 1
+    hint = await invoke(client, "create_ordered_set", name, values=[OrderedVariant.of(value, weight), OrderedVariant.of_int(9, other)])
+    for method in ("get_element_with_weight", "get_and_remove_element_with_weight"):
+        actual = await invoke(client, method, name, hint, pos=weight)
+        assert type(actual) is Variant and actual == value
+    assert await invoke(client, "get_ordered_set", name, hint) == [OrderedVariant.of_int(9, other)]
+
+
+@pytest.mark.parametrize("family", ["list", "vector"])
+async def test_live_positional_reads_and_pops(live_client, family):
+    client, key = live_client
+    name = key()
+    values = [Variant.none(), Variant.of_bytes(b""), Variant.of_long(0), Variant.of_double(-0.0),
+              Variant.of_bytes(b"position" * 1024)]
+    hint = await invoke(client, "create_" + family, name, values=values)
+    assert await invoke(client, "get_at", name, hint, pos=3) == values[3]
+    assert await invoke(client, "pop_at", name, hint, pos=1) == values[1]
+    assert await invoke(client, "remove_at", name, hint, pos=1) == 1
+    assert await invoke(client, "get_" + family, name, hint) == [values[0], *values[3:]]
+
+
+@pytest.mark.parametrize("family", ["list", "vector", "ordered_set", "ordered_map"])
+async def test_live_destructive_ranges(live_client, family):
+    client, key = live_client
+    name = key()
+    options = {"values": [10, 20, 30, 40]}
+    if family == "ordered_set":
+        options["values"] = [OrderedVariant.of_int(v, i+1) for i, v in enumerate(options["values"])]
+    if family == "ordered_map":
+        options["keys"] = [OrderedPayload(bytes([i]), i+1) for i in range(4)]
+    hint = await invoke(client, "create_" + family, name, **options)
+    method = "get_and_delete_element_in_range_" + family if family.startswith("ordered") else "get_and_delete_" + family + "_elements_in_range"
+    before = await invoke(client, "get_size", name, hint)
+    extracted = await invoke(client, method, name, hint, pos=1, end=2)
+    after = await invoke(client, "get_size", name, hint)
+    assert len(extracted) == 2 and before - after == 2
+    remaining = await invoke(client, "get_" + family, name, hint)
+    if family == "ordered_map":
+        expected = dict(zip(options["keys"], [Variant.of_long(v) for v in options["values"]]))
+        assert extracted == dict(list(expected.items())[:2])
+        assert remaining == dict(list(expected.items())[2:])
+    elif family == "ordered_set":
+        assert extracted == options["values"][:2]
+        assert remaining == options["values"][2:]
+    else:
+        assert extracted == [Variant.of_long(20), Variant.of_long(30)]
+        assert remaining == [Variant.of_long(10), Variant.of_long(40)]
+
+
+async def test_live_compressed_key_and_map_update(live_client):
+    client, key = live_client
+    name = key() + "/" + "x" * 2048
+    # Register the expanded key for cleanup.
+    hint = await invoke(client, "create", name, value=b"x" * 4096)
+    try:
+        assert await invoke(client, "get", name, hint) == Variant.of_bytes(b"x" * 4096)
+    finally:
+        await invoke(client, "remove", name, hint)
+    name = key()
+    hint = await invoke(client, "create_map", name, keys=[b"entry"], values=[1.5])
+    assert await invoke(client, "update", name, hint, element_key=b"entry", value=2) == Variant.of_double(1.5)
+    assert await invoke(client, "pop_in_container", name, hint, element_key=b"entry") == Variant.of_long(2)
+
+
+@pytest.mark.parametrize("family", ["ordered_map", "ordered_set"])
+async def test_live_order_updates_exact_matching_and_bounds(live_client, family):
+    client, key = live_client
+    name = key()
+    member = b"weighted-member" * 100
+    options = {"keys": [OrderedPayload(member, 10), OrderedPayload(member, 20)], "values": [1.25, 2]}
+    if family == "ordered_set":
+        options = {"values": [OrderedVariant.of_bytes(member, 10), OrderedVariant.of_bytes(member, 20)]}
+    hint = await invoke(client, "create_" + family, name, **options)
+    before = await invoke(client, "get_" + family, name, hint)
+    with pytest.raises(KeyNotFoundError):
+        await invoke(client, "increment_order", name, hint, OrderedPayload(member, 999), 1)
+    with pytest.raises(HurriCacheRpcError) as caught:
+        await invoke(client, "increment_order", name, hint, OrderedPayload(member, 10), -11)
+    assert caught.value.code == grpc.StatusCode.OUT_OF_RANGE
+    assert await invoke(client, "get_" + family, name, hint) == before
+    assert await invoke(client, "increment_order", name, hint, OrderedPayload(member, 10), 5) is True
+    assert await invoke(client, "update", name, hint, OrderedPayload(member, 20), 99) is True
+    actual = await invoke(client, "get_" + family, name, hint)
+    assert [item.order for item in actual] == [15, 99]
+    if family == "ordered_map":
+        assert list(actual.values()) == [Variant.of_double(1.25), Variant.of_long(2)]
+    else:
+        assert [item.require_bytes() for item in actual] == [member, member]
+    assert await invoke(client, "update_order", name, hint, OrderedPayload(member, 15), 0) is True
+    assert [item.order for item in await invoke(client, "get_" + family, name, hint)] == [0, 99]

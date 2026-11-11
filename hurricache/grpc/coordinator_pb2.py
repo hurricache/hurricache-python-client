@@ -15,32 +15,38 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x63oordinator.proto\x12\x0b\x63oordinator\"\x8a\x01\n\x13PeerAnnounceRequest\x12\x0e\n\x06target\x18\x01 \x01(\t\x12\x1a\n\x12\x63oordinator_target\x18\x02 \x01(\t\x12\x19\n\x11replicator_target\x18\x03 \x01(\t\x12\x0e\n\x06uptime\x18\x04 \x01(\x04\x12\x12\n\x05relay\x18\x05 \x01(\tH\x00\x88\x01\x01\x42\x08\n\x06_relay\"j\n\x11PeerAnnounceReply\x12\x0e\n\x06target\x18\x01 \x01(\t\x12\x1a\n\x12\x63oordinator_target\x18\x02 \x01(\t\x12\x19\n\x11replicator_target\x18\x03 \x01(\t\x12\x0e\n\x06uptime\x18\x04 \x01(\x04\"B\n\x04Ping\x12\x0e\n\x06target\x18\x01 \x01(\t\x12\x1a\n\x12\x63oordinator_target\x18\x02 \x01(\t\x12\x0e\n\x06uptime\x18\x03 \x01(\x04\"B\n\x04Pong\x12\x0e\n\x06target\x18\x01 \x01(\t\x12\x1a\n\x12\x63oordinator_target\x18\x02 \x01(\t\x12\x0e\n\x06uptime\x18\x03 \x01(\x04\"X\n\x0bPeerRouting\x12\x0e\n\x06target\x18\x01 \x01(\t\x12#\n\x04role\x18\x02 \x01(\x0e\x32\x15.coordinator.NodeRole\x12\x14\n\x0cpartitionIds\x18\x03 \x03(\r\"$\n\x12PeerRoutingRequest\x12\x0e\n\x06target\x18\x01 \x01(\t\"T\n\x0fRoutingInfoData\x12\x12\n\nmax_shards\x18\x01 \x01(\r\x12-\n\x0bpeerRouting\x18\x02 \x03(\x0b\x32\x18.coordinator.PeerRouting\"\x06\n\x04Void*1\n\x08NodeRole\x12\r\n\tUNDEFINED\x10\x00\x12\n\n\x06MASTER\x10\x01\x12\n\n\x06\x42\x41\x43KUP\x10\x02\x32\x93\x04\n\x12\x43oordinatorService\x12J\n\x04init\x12 .coordinator.PeerAnnounceRequest\x1a\x1e.coordinator.PeerAnnounceReply\"\x00\x12.\n\x04ping\x12\x11.coordinator.Ping\x1a\x11.coordinator.Pong\"\x00\x12O\n\x0egetRoutingInfo\x12\x1f.coordinator.PeerRoutingRequest\x1a\x18.coordinator.PeerRouting\"\x00\x30\x01\x12I\n\x11removeRoutingInfo\x12\x1f.coordinator.PeerRoutingRequest\x1a\x11.coordinator.Void\"\x00\x12\x44\n\x0fsendRoutingInfo\x12\x1c.coordinator.RoutingInfoData\x1a\x11.coordinator.Void\"\x00\x12N\n\x15readyForDataMigration\x12 .coordinator.PeerAnnounceRequest\x1a\x11.coordinator.Void\"\x00\x12O\n\x18provideGlobalRoutingInfo\x12\x11.coordinator.Void\x1a\x1c.coordinator.RoutingInfoData\"\x00\x30\x01\x42>\n\x1f\x63om.hurricache.grpc.coordinatorB\x0b\x63oordinatorP\x01\xa2\x02\x0b\x63oordinatorb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x63oordinator.proto\x12\x0b\x63oordinator\"$\n\x08\x45ndpoint\x12\n\n\x02ip\x18\x01 \x01(\t\x12\x0c\n\x04port\x18\x02 \x01(\r\"\x88\x02\n\x13PeerAnnounceRequest\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x31\n\x12\x63oordinator_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x30\n\x11replicator_target\x18\x03 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x30\n\x0credis_target\x18\x04 \x01(\x0b\x32\x15.coordinator.EndpointH\x00\x88\x01\x01\x12\x0e\n\x06uptime\x18\x05 \x01(\x04\x12\x12\n\ncluster_id\x18\x06 \x01(\tB\x0f\n\r_redis_target\"\xbe\x01\n\x0fNodeInformation\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x31\n\x12\x63oordinator_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x0e\n\x06uptime\x18\x04 \x01(\x04\x12\x30\n\x0cimpactedNode\x18\x05 \x01(\x0b\x32\x15.coordinator.EndpointH\x00\x88\x01\x01\x42\x0f\n\r_impactedNode\"\x86\x02\n\x11PeerAnnounceReply\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x31\n\x12\x63oordinator_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x30\n\x11replicator_target\x18\x03 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x30\n\x0credis_target\x18\x04 \x01(\x0b\x32\x15.coordinator.EndpointH\x00\x88\x01\x01\x12\x0e\n\x06uptime\x18\x05 \x01(\x04\x12\x12\n\ncluster_id\x18\x06 \x01(\tB\x0f\n\r_redis_target\"\x84\x01\n\x04Ping\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x31\n\x12\x63oordinator_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x0e\n\x06uptime\x18\x03 \x01(\x04\x12\x12\n\ncluster_id\x18\x04 \x01(\t\"\x84\x01\n\x04Pong\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x31\n\x12\x63oordinator_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12\x0e\n\x06uptime\x18\x03 \x01(\x04\x12\x12\n\ncluster_id\x18\x04 \x01(\t\"\x9c\x01\n\x0bPeerRouting\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\x12+\n\x0credis_target\x18\x02 \x01(\x0b\x32\x15.coordinator.Endpoint\x12#\n\x04role\x18\x03 \x01(\x0e\x32\x15.coordinator.NodeRole\x12\x14\n\x0cpartitionIds\x18\x04 \x03(\r\";\n\x12PeerRoutingRequest\x12%\n\x06target\x18\x01 \x01(\x0b\x32\x15.coordinator.Endpoint\"\x95\x01\n\x0fRoutingInfoData\x12\x12\n\nmax_shards\x18\x01 \x01(\r\x12-\n\x0bpeerRouting\x18\x02 \x03(\x0b\x32\x18.coordinator.PeerRouting\x12/\n\x0b\x63oordinator\x18\x03 \x01(\x0b\x32\x15.coordinator.EndpointH\x00\x88\x01\x01\x42\x0e\n\x0c_coordinator\"\x06\n\x04Void\"\x1e\n\x0c\x42oolResponse\x12\x0e\n\x06result\x18\x01 \x01(\x08*1\n\x08NodeRole\x12\r\n\tUNDEFINED\x10\x00\x12\n\n\x06MASTER\x10\x01\x12\n\n\x06\x42\x41\x43KUP\x10\x02\x32\xc7\x03\n\x12\x43oordinatorService\x12J\n\x04init\x12 .coordinator.PeerAnnounceRequest\x1a\x1e.coordinator.PeerAnnounceReply\"\x00\x12.\n\x04ping\x12\x11.coordinator.Ping\x1a\x11.coordinator.Pong\"\x00\x12O\n\x0egetRoutingInfo\x12\x1f.coordinator.PeerRoutingRequest\x1a\x18.coordinator.PeerRouting\"\x00\x30\x01\x12\x44\n\x0fsendRoutingInfo\x12\x1c.coordinator.RoutingInfoData\x1a\x11.coordinator.Void\"\x00\x12M\n\x10triggerMigration\x12\x1c.coordinator.NodeInformation\x1a\x19.coordinator.BoolResponse\"\x00\x12O\n\x18provideGlobalRoutingInfo\x12\x11.coordinator.Void\x1a\x1c.coordinator.RoutingInfoData\"\x00\x30\x01\x42\x30\n\x1f\x63om.hurricache.grpc.coordinatorB\x0b\x63oordinatorP\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'coordinator_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'\n\037com.hurricache.grpc.coordinatorB\013coordinatorP\001\242\002\013coordinator'
-  _globals['_NODEROLE']._serialized_start=641
-  _globals['_NODEROLE']._serialized_end=690
-  _globals['_PEERANNOUNCEREQUEST']._serialized_start=35
-  _globals['_PEERANNOUNCEREQUEST']._serialized_end=173
-  _globals['_PEERANNOUNCEREPLY']._serialized_start=175
-  _globals['_PEERANNOUNCEREPLY']._serialized_end=281
-  _globals['_PING']._serialized_start=283
-  _globals['_PING']._serialized_end=349
-  _globals['_PONG']._serialized_start=351
-  _globals['_PONG']._serialized_end=417
-  _globals['_PEERROUTING']._serialized_start=419
-  _globals['_PEERROUTING']._serialized_end=507
-  _globals['_PEERROUTINGREQUEST']._serialized_start=509
-  _globals['_PEERROUTINGREQUEST']._serialized_end=545
-  _globals['_ROUTINGINFODATA']._serialized_start=547
-  _globals['_ROUTINGINFODATA']._serialized_end=631
-  _globals['_VOID']._serialized_start=633
-  _globals['_VOID']._serialized_end=639
-  _globals['_COORDINATORSERVICE']._serialized_start=693
-  _globals['_COORDINATORSERVICE']._serialized_end=1224
+  _globals['DESCRIPTOR']._serialized_options = b'\n\037com.hurricache.grpc.coordinatorB\013coordinatorP\001'
+  _globals['_NODEROLE']._serialized_start=1479
+  _globals['_NODEROLE']._serialized_end=1528
+  _globals['_ENDPOINT']._serialized_start=34
+  _globals['_ENDPOINT']._serialized_end=70
+  _globals['_PEERANNOUNCEREQUEST']._serialized_start=73
+  _globals['_PEERANNOUNCEREQUEST']._serialized_end=337
+  _globals['_NODEINFORMATION']._serialized_start=340
+  _globals['_NODEINFORMATION']._serialized_end=530
+  _globals['_PEERANNOUNCEREPLY']._serialized_start=533
+  _globals['_PEERANNOUNCEREPLY']._serialized_end=795
+  _globals['_PING']._serialized_start=798
+  _globals['_PING']._serialized_end=930
+  _globals['_PONG']._serialized_start=933
+  _globals['_PONG']._serialized_end=1065
+  _globals['_PEERROUTING']._serialized_start=1068
+  _globals['_PEERROUTING']._serialized_end=1224
+  _globals['_PEERROUTINGREQUEST']._serialized_start=1226
+  _globals['_PEERROUTINGREQUEST']._serialized_end=1285
+  _globals['_ROUTINGINFODATA']._serialized_start=1288
+  _globals['_ROUTINGINFODATA']._serialized_end=1437
+  _globals['_VOID']._serialized_start=1439
+  _globals['_VOID']._serialized_end=1445
+  _globals['_BOOLRESPONSE']._serialized_start=1447
+  _globals['_BOOLRESPONSE']._serialized_end=1477
+  _globals['_COORDINATORSERVICE']._serialized_start=1531
+  _globals['_COORDINATORSERVICE']._serialized_end=1986
 # @@protoc_insertion_point(module_scope)

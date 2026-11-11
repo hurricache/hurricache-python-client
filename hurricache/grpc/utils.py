@@ -9,18 +9,20 @@ from collections.abc import Iterable
 from typing import TypeVar
 
 from hurricache.grpc import cache_pb2
-from hurricache.grpc.models import KeyHintData, OrderedPayload, Payload
+from hurricache.grpc.models import CasResult, KeyHintData, OrderedPayload, OrderedVariant, Payload, Variant
 from hurricache.grpc.operation import absolute_ttl, payload_codec, threshold
 
 COMPRESSION_THRESHOLD = 1024
 MAX_RPC_SIZE = 4 * 1024 * 1024 - 512 * 1024
 MAX_DECODED_BYTES = 64 * 1024 * 1024
 KeyLike = bytes | str
-ValueLike = bytes | Payload
+ValueLike = bytes | Payload | Variant | int | float
 T = TypeVar("T")
 
 
 def as_bytes(value: bytes | bytearray | memoryview | str, *, name: str = "value") -> bytes:
+    if isinstance(value, Payload):
+        return value.value
     if isinstance(value, str):
         return value.encode("utf-8")
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -32,8 +34,9 @@ def _set_hint(target: object, hint: KeyHintData | None) -> None:
     if hint is None:
         return
     key_hint = target.keyHint
-    if hint.week_hash is not None:
-        key_hint.week_hash = hint.week_hash & 0xFFFFFFFF
+    key_hint.SetInParent()
+    if hint.weak_hash is not None:
+        key_hint.weak_hash = hint.weak_hash & 0xFFFFFFFF
     if hint.strong_hash is not None:
         key_hint.strong_hash = hint.strong_hash & 0xFFFFFFFF
 
@@ -60,47 +63,63 @@ def create_key(key: KeyLike, hint: KeyHintData | None = None, client_id: int = 0
     return result
 
 
-def create_value(value: bytes | bytearray | memoryview | Payload, ttl: int = 0, client_id: int = 0, *, compress: bool = False) -> cache_pb2.Value:
-    raw = value.value if isinstance(value, Payload) else as_bytes(value)
-    body, raw_size = _compressed(raw, compress)
-    result = cache_pb2.Value(value=cache_pb2.BinaryPayload(payload=body, size=len(body)))
-    if raw_size is not None:
-        result.compressionInfo.enabled = True
-        result.compressionInfo.rawSize = raw_size
+def as_variant(value) -> Variant:
+    if isinstance(value, Variant):
+        return value
+    if isinstance(value, bool):
+        raise TypeError("bool is not a typed numeric value")
+    if isinstance(value, int):
+        return Variant.of_long(value)
+    if isinstance(value, float):
+        return Variant.of_double(value)
+    return Variant.of_bytes(as_bytes(value))
+
+
+def create_value(value, ttl: int = 0, client_id: int | None = None, *, compress: bool = False) -> cache_pb2.Value:
+    variant = as_variant(value)
+    result = cache_pb2.Value(value_type=int(variant.type))
+    if variant.is_bytes:
+        body, raw_size = _compressed(variant.require_bytes(), compress)
+        result.value.CopyFrom(cache_pb2.BinaryPayload(payload=body, size=len(body)))
+        if raw_size is not None:
+            result.compressionInfo.enabled = True
+            result.compressionInfo.rawSize = raw_size
+    elif variant.is_int:
+        result.value.intPayload = variant.require_long()
+    elif variant.is_double:
+        result.value.doublePayload = variant.require_double()
     if ttl > 0:
         result.ttl = absolute_ttl(ttl)
-    # Java always attaches lock ownership, including client id zero.
-    result.lock_info.type = cache_pb2.NO_LOCK
-    result.lock_info.lockedBy = client_id
+    if client_id is not None:
+        result.lock_info.type = cache_pb2.NO_LOCK
+        result.lock_info.lockedBy = client_id
     return result
 
 
 def create_ordered_value(
-    value: bytes | bytearray | memoryview | Payload,
-    order: int = 0,
+    value,
+    order: int | None = None,
     ttl: int = 0,
-    client_id: int = 0,
+    client_id: int | None = None,
 ) -> cache_pb2.OrderedValue:
-    if isinstance(value, OrderedPayload):
-        order = value.order
-        raw = value.value
-    else:
-        raw = value.value if isinstance(value, Payload) else as_bytes(value)
-    body, raw_size = _compressed(raw)
-    result = cache_pb2.OrderedValue(value=cache_pb2.BinaryPayload(payload=body, size=len(body)), order=order)
-    if raw_size is not None:
-        result.compressionInfo.enabled = True
-        result.compressionInfo.rawSize = raw_size
-    if ttl > 0:
-        result.ttl = absolute_ttl(ttl)
-    result.lock_info.type = cache_pb2.NO_LOCK
-    result.lock_info.lockedBy = client_id
+    if isinstance(value, OrderedVariant):
+        order, value = value.order, value.variant
+    elif isinstance(value, OrderedPayload):
+        order, value = value.order, value.value
+    unordered = create_value(value, ttl, client_id, compress=True)
+    result = cache_pb2.OrderedValue(order=0 if order is None else order)
+    # Field numbers differ between Value and OrderedValue.
+    for descriptor, field_value in unordered.ListFields():
+        if descriptor.message_type is not None:
+            getattr(result, descriptor.name).CopyFrom(field_value)
+        else:
+            setattr(result, descriptor.name, field_value)
     return result
 
 
 def create_ordered_key(
     key: KeyLike | OrderedPayload,
-    order: int = 0,
+    order: int | None = 0,
     ttl: int = 0,
     client_id: int = 0,
 ) -> cache_pb2.OrderedKey:
@@ -110,7 +129,7 @@ def create_ordered_key(
     else:
         raw = as_bytes(key, name="key")
     body, raw_size = _compressed(raw)
-    result = cache_pb2.OrderedKey(payload=cache_pb2.KeyBinaryPayload(payload=body, size=len(body)), order=order)
+    result = cache_pb2.OrderedKey(payload=cache_pb2.KeyBinaryPayload(payload=body, size=len(body)), order=0 if order is None else order)
     result.clientId = client_id
     if raw_size is not None:
         result.compressionInfo.enabled = True
@@ -123,7 +142,8 @@ def build_get_request(key: KeyLike, hint: KeyHintData | None = None, client_id: 
 
 
 def _decode(payload, info) -> bytes:
-    data = bytes(payload.payload)
+    field = "non_cord_payload" if isinstance(payload, cache_pb2.BinaryPayload) and payload.WhichOneof("data") == "non_cord_payload" else "payload"
+    data = bytes(getattr(payload, field))
     if len(data) != payload.size:
         raise ValueError("payload size metadata does not match bytes")
     if not info.enabled:
@@ -152,8 +172,42 @@ def _decode(payload, info) -> bytes:
     return decoded
 
 
-def decode_value(value: cache_pb2.Value | cache_pb2.OrderedValue) -> bytes:
-    return _decode(value.value, value.compressionInfo)
+def decode_value(value: cache_pb2.Value | cache_pb2.OrderedValue) -> Variant:
+    payload = value.value
+    kind = payload.WhichOneof("data")
+    # Match Java's explicit numeric type precedence, including absent oneofs.
+    if value.value_type == cache_pb2.INT:
+        return Variant.of_long(payload.intPayload)
+    if value.value_type == cache_pb2.DOUBLE:
+        return Variant.of_double(payload.doublePayload)
+    if kind == "intPayload":
+        return Variant.of_long(payload.intPayload)
+    if kind == "doublePayload":
+        return Variant.of_double(payload.doublePayload)
+    if kind in ("payload", "non_cord_payload"):
+        return Variant.of_bytes(_decode(payload, value.compressionInfo))
+    return Variant.none()
+
+
+def decode_response(response):
+    if response.HasField("value_unordered"):
+        return decode_value(response.value_unordered)
+    if response.HasField("value_ordered"):
+        # Java's DecompressingVariantObserver returns Variant for both scalar
+        # alternatives; ordered collection elements retain their order below.
+        return decode_value(response.value_ordered)
+    return Variant.none()
+
+
+def decode_update(response):
+    return decode_value(response.value) if response.HasField("value") else Variant.none()
+
+
+def decode_cas(response):
+    if not response.HasField("expected"):
+        return CasResult(response.result)
+    observed = decode_response(response.expected)
+    return CasResult(response.result, None if observed.is_none else observed.number_value(), decode_hint(response.expected))
 
 
 def decode_key(key: cache_pb2.Key | cache_pb2.OrderedKey) -> bytes:
@@ -165,30 +219,38 @@ def decode_hint(message: object, field: str = "keyHint") -> KeyHintData | None:
         return None
     hint = getattr(message, field)
     return KeyHintData(
-        week_hash=hint.week_hash if hint.HasField("week_hash") else None,
+        weak_hash=hint.weak_hash if hint.HasField("weak_hash") else None,
         strong_hash=hint.strong_hash if hint.HasField("strong_hash") else None,
+        was_relayed=bool(getattr(message, "relayed", False)),
     )
 
 
 def decode_batch(batch: cache_pb2.BatchValueResponse):
     """Decode a stream batch without leaking protobuf objects."""
+    if (batch.key_ordered and batch.key_unordered) or (batch.value_ordered and
+            (batch.value_unordered or batch.key_ordered or batch.key_unordered)):
+        raise ValueError("batch mixes incompatible container representations")
     if batch.key_ordered:
         if len(batch.key_ordered) != len(batch.value_unordered):
             raise ValueError("ordered-map batch contains unpaired keys and values")
         return {
-            OrderedPayload(decode_key(key), key.order): Payload(decode_value(value))
+            OrderedPayload(decode_key(key), key.order if key.HasField("order") else None): decode_value(value)
             for key, value in zip(batch.key_ordered, batch.value_unordered)
         }
     if batch.key_unordered:
         if len(batch.key_unordered) != len(batch.value_unordered):
             raise ValueError("map batch contains unpaired keys and values")
         return {
-            Payload(decode_key(key)): Payload(decode_value(value))
+            Payload(decode_key(key)): decode_value(value)
             for key, value in zip(batch.key_unordered, batch.value_unordered)
         }
     if batch.value_ordered:
-        return [OrderedPayload(decode_value(value), value.order) for value in batch.value_ordered]
-    return [Payload(decode_value(value)) for value in batch.value_unordered]
+        return [OrderedVariant(decode_value(value), value.order if value.HasField("order") else None) for value in batch.value_ordered]
+    return [decode_value(value) for value in batch.value_unordered]
+
+
+def grpc_target(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
 
 def chunk_messages(base_size: int, messages: Iterable[T], size_of=lambda item: item.ByteSize()) -> list[list[T]]:

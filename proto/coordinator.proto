@@ -3,35 +3,51 @@ syntax = "proto3";
 option java_multiple_files = true;
 option java_package = "com.hurricache.grpc.coordinator";
 option java_outer_classname = "coordinator";
-option objc_class_prefix = "coordinator";
 package coordinator;
 
-
-message PeerAnnounceRequest {
-  string target = 1;
-  string coordinator_target = 2;
-  string replicator_target = 3;
-  uint64 uptime = 4;
-  optional string relay = 5;
+message Endpoint{
+  string ip = 1;
+  uint32 port=2;
 }
 
-message PeerAnnounceReply {
-  string target = 1;
-  string coordinator_target = 2;
-  string replicator_target = 3;
+message PeerAnnounceRequest {
+  Endpoint target = 1;
+  Endpoint coordinator_target = 2;
+  Endpoint replicator_target = 3;
+  optional Endpoint redis_target = 4;
+  uint64 uptime = 5;
+  string cluster_id=6;
+}
+
+message NodeInformation {
+  Endpoint target = 1;
+  Endpoint coordinator_target = 2;
   uint64 uptime = 4;
+  optional Endpoint impactedNode = 5;
+}
+
+
+message PeerAnnounceReply {
+  Endpoint target = 1;
+  Endpoint coordinator_target = 2;
+  Endpoint replicator_target = 3;
+  optional Endpoint redis_target = 4;
+  uint64 uptime = 5;
+  string cluster_id=6;
 }
 
 message Ping {
-  string target = 1;
-  string coordinator_target = 2;
+  Endpoint target = 1;
+  Endpoint coordinator_target = 2;
   uint64 uptime = 3;
+  string cluster_id=4;
 }
 
 message Pong {
-  string target = 1;
-  string coordinator_target = 2;
+  Endpoint target = 1;
+  Endpoint coordinator_target = 2;
   uint64 uptime = 3;
+  string cluster_id=4;
 }
 
 enum NodeRole {
@@ -41,19 +57,21 @@ enum NodeRole {
 }
 
 message PeerRouting {
-  string target = 1;
-  NodeRole role = 2;
-  repeated uint32 partitionIds = 3;
+  Endpoint target = 1;
+  Endpoint redis_target = 2;
+  NodeRole role = 3;
+  repeated uint32 partitionIds = 4;
 }
 
 message PeerRoutingRequest {
-  string target = 1;
+  Endpoint target = 1;
 }
 
 
 message RoutingInfoData {
   uint32 max_shards=1;
   repeated PeerRouting peerRouting = 2;
+  optional Endpoint coordinator = 3;
 }
 
 
@@ -61,13 +79,17 @@ message Void{
 
 }
 
+message BoolResponse{
+  bool result=1;
+}
+
+
 service CoordinatorService{
   //init message sent node to neighbours to coordinator  interface
   rpc init(PeerAnnounceRequest) returns (PeerAnnounceReply){}
   rpc ping(Ping) returns (Pong){}
   rpc getRoutingInfo(PeerRoutingRequest) returns (stream PeerRouting){}
-  rpc removeRoutingInfo(PeerRoutingRequest) returns (Void){}
   rpc sendRoutingInfo(RoutingInfoData) returns (Void){}
-  rpc readyForDataMigration(PeerAnnounceRequest) returns (Void){}
+  rpc triggerMigration(NodeInformation) returns (BoolResponse){}
   rpc provideGlobalRoutingInfo(Void) returns(stream RoutingInfoData){}
 }

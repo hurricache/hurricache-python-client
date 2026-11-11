@@ -41,7 +41,7 @@ def plan(request, *, creation=False):
     reserve = type(base)()
     reserve.CopyFrom(base)
     if creation:
-        reserve.key.keyHint.week_hash = 0xFFFFFFFF
+        reserve.key.keyHint.weak_hash = 0xFFFFFFFF
         reserve.key.keyHint.strong_hash = 0xFFFFFFFF
 
     def build(start, end, reserved=True):
@@ -51,6 +51,9 @@ def plan(request, *, creation=False):
             if result.pos + end > 0xFFFFFFFF:
                 raise ValueError("insertion position exceeds uint32")
             result.pos += start
+        if isinstance(result, pb.AddToValRequest) and start:
+            result.pos.CopyFrom(items[start - 1][0][1])
+            result.isBefore = False
         for item in items[start:end]:
             for field, value in item:
                 getattr(result, field).append(value)
@@ -74,8 +77,6 @@ def plan(request, *, creation=False):
         start = lo
     if not chunks:
         chunks = [(build(0, 0, False), 0)]
-    if isinstance(request, pb.AddToValRequest) and not request.isBefore:
-        chunks.reverse()
     return chunks
 
 

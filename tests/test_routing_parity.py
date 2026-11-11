@@ -3,7 +3,7 @@ import inspect
 import pytest
 from test_parity import OPERATIONS, Stub, invoke, operation_arguments, operation_shape  # noqa: F401
 
-from hurricache import AsyncHurriCacheClient, HurriCacheClient, KeyHintData, Mode, PartialOperationError
+from hurricache import AsyncHurriCacheClient, HurriCacheClient, KeyHintData, Mode, PartialOperationError, Variant
 from hurricache.grpc import coordinator_pb2 as cp
 from hurricache.grpc.exceptions import FailedPreconditionError, UnavailableError
 from hurricache.grpc.smart_client import _is_write, _Topology
@@ -14,15 +14,14 @@ pytest_plugins = ["test_parity"]
 # plus explicitly retained read/create aliases. All remaining operations use
 # executeWrite(...), independently of the implementation's policy collection.
 CONFIGURED = frozenset("""
-get_value exist_key remove get_size get_head get_tail get_front get_ttl
-create_key_value update_value update_key_value create_queue create_list
-create_vector create_set create_ordered_set create_map create_ordered_map
-get_element_at_position atomic_load get_value_in_container get_container_value
-exist_key_in_container contains_container_key stream_queue stream_list stream_vector
-stream_set stream_map stream_ordered_map stream_ordered_set get_container
-get_element_in_range stream_element_in_range_unordered stream_element_in_range_ordered_set
-stream_element_in_range_ordered stream_element_in_range_ordered_map
+get contains_key remove get_size peek_head peek_tail get_ttl create replace
+get_at get_in_container contains_in_container get_container get_list get_vector
+get_queue get_set get_map get_ordered_map get_ordered_set get_range
+get_element_in_range_ordered_set get_element_in_range_ordered_map
 get_element_with_weight get_and_remove_element_with_weight
+create_key_value get_value update_value update_key_value exist_key
+get_head get_front get_tail stream_list stream_vector stream_queue stream_set
+stream_map stream_ordered_map stream_ordered_set
 """.split())
 
 @pytest.mark.parametrize("name", OPERATIONS)
@@ -65,7 +64,7 @@ async def test_reroute_is_known_different_and_final(client_form, route):
         return fail(*args, **kwargs)
     stub.getValue = async_fail if asynchronous else fail
     if route == "backup:1":
-        assert await invoke(client, "get_value", b"k") == b"v"
+        assert await invoke(client, "get_value", b"k") == Variant.of_bytes(b"v")
         assert len(second_stub.calls) == 1
     else:
         with pytest.raises(FailedPreconditionError):
@@ -88,10 +87,10 @@ async def test_partial_never_falls_back_and_override_is_local(client_form, monke
     monkeypatch.setattr(batching, "MAX_RPC_SIZE", 180)
     stub.fail_at = 2
     with pytest.raises(PartialOperationError):
-        await invoke(client, "add_element_to_tail", b"k", values=[b"x" * 60] * 6)
+        await invoke(client, "push_tail", b"k", values=[bytes(range(60))] * 6)
     assert not second_stub.calls
     with client.mode(Mode.BACKUP):
-        await invoke(client, "atomic_load_and_delete", b"k", KeyHintData(0xFFFFFFFF))
+        await invoke(client, "pop", b"k", KeyHintData(0xFFFFFFFF))
     assert len(second_stub.calls) == 1
     assert client._mode_override.get() is None
 

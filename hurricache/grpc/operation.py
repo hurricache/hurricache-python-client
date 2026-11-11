@@ -78,7 +78,8 @@ class Defaults:
     @property
     def target(self):
         if hasattr(self, "_host"):
-            return f"{self._host}:{self._port}"
+            from hurricache.grpc.utils import grpc_target
+            return grpc_target(self._host, self._port)
         return self._coordinators[max(0, self._coordinator_index - 1) % len(self._coordinators)]
 
 
@@ -112,7 +113,7 @@ def _wrap(method):
             ttl = bound.arguments.get("ttl", signature.parameters["ttl"].default)
             if ttl is None:
                 ttl = client._default_ttl
-            if not isinstance(ttl, int) or ttl < 0:
+            if isinstance(ttl, bool) or not isinstance(ttl, int) or (ttl < 0 and method.__name__ != "set_ttl"):
                 raise ValueError("ttl must be a nonnegative integer")
             bound.arguments["ttl"] = ttl
         return bound

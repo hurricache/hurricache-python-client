@@ -16,11 +16,13 @@ import grpc
 from tenacity import AsyncRetrying, Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from hurricache.grpc import coordinator_pb2, coordinator_pb2_grpc
+from hurricache.grpc.api import ALIASES, WRITE_OPERATIONS
 from hurricache.grpc.async_client import AsyncHurriCacheClient
 from hurricache.grpc.client import HurriCacheClient
 from hurricache.grpc.exceptions import FailedPreconditionError, UnavailableError
 from hurricache.grpc.models import KeyHintData, Mode
 from hurricache.grpc.operation import Defaults, configure, operation, remaining
+from hurricache.grpc.utils import grpc_target
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,15 +33,15 @@ class _Topology:
 
 
 _EMPTY_TOPOLOGY = _Topology(0, {}, frozenset())
-_WRITE_OPERATIONS = frozenset(['add_element', 'add_element_hash_map', 'add_element_ordered', 'add_element_ordered_map', 'add_element_ordered_set', 'add_element_to_head', 'add_element_to_head_count', 'add_element_to_position', 'add_element_to_position_after', 'add_element_to_position_after_count', 'add_element_to_position_before', 'add_element_to_position_before_count', 'add_element_to_position_by_value', 'add_element_to_position_by_value_count', 'add_element_to_tail', 'add_element_to_tail_count', 'add_element_unordered', 'add_element_with_weight', 'atomic_add', 'atomic_and', 'atomic_compare_and_set', 'atomic_create', 'atomic_exchange', 'atomic_load_and_delete', 'atomic_or', 'atomic_store', 'atomic_sub', 'atomic_xor', 'get_and_delete_value', 'get_and_delete_value_in_container', 'get_and_remove_container_value', 'get_and_remove_element_at_position', 'get_and_remove_front', 'get_and_remove_tail', 'lock_object', 'remove_container_key', 'remove_element_at_position', 'remove_from_container', 'remove_from_container_by_key_value', 'remove_head', 'remove_in_container', 'remove_tail', 'set_ttl', 'unlock_object', 'update_container_value', 'update_value_in_container'])
+_WRITE_OPERATIONS = frozenset(WRITE_OPERATIONS | {old for old, new in ALIASES.items() if new in WRITE_OPERATIONS})
 
 
 def _coordinator_addresses(value: str | Sequence[str], port: int | None) -> tuple[str, ...]:
     addresses = (value,) if isinstance(value, str) else tuple(value)
     if port is not None:
-        if len(addresses) != 1 or ":" in addresses[0]:
+        if len(addresses) != 1:
             raise ValueError("coordinator_port can only be used with one hostname")
-        addresses = (f"{addresses[0]}:{port}",)
+        addresses = (grpc_target(addresses[0], port),)
     if not addresses or any(not item for item in addresses):
         raise ValueError("at least one coordinator address is required")
     return addresses
@@ -50,7 +52,7 @@ def _split_target(target: str) -> tuple[str, int]:
     host, separator, port = normalized.rpartition(":")
     if not separator or not host:
         raise ValueError(f"cache target must be host:port, got {target!r}")
-    return host, int(port)
+    return host.strip("[]"), int(port)
 
 
 def _topology_from(response: coordinator_pb2.RoutingInfoData) -> _Topology:
@@ -59,16 +61,17 @@ def _topology_from(response: coordinator_pb2.RoutingInfoData) -> _Topology:
     routes: dict[tuple[int, int], str] = {}
     targets: set[str] = set()
     for peer in response.peerRouting:
-        if not peer.target or peer.role not in (coordinator_pb2.MASTER, coordinator_pb2.BACKUP):
+        if not peer.target.ip or not 0 < peer.target.port <= 65535 or peer.role not in (coordinator_pb2.MASTER, coordinator_pb2.BACKUP):
             raise ValueError("invalid peer target or role")
-        targets.add(peer.target)
+        target = grpc_target(peer.target.ip, peer.target.port)
+        targets.add(target)
         for shard in peer.partitionIds:
             if not 0 <= shard < response.max_shards:
                 raise ValueError("shard outside topology")
             previous = routes.get((peer.role, shard))
-            if previous is not None and previous != peer.target:
+            if previous is not None and previous != target:
                 raise ValueError("conflicting shard routes")
-            routes[(peer.role, shard)] = peer.target
+            routes[(peer.role, shard)] = target
     if not routes:
         raise ValueError("empty topology")
     return _Topology(response.max_shards, routes, frozenset(targets))
@@ -152,7 +155,7 @@ class HurriCacheSmartClient(Defaults):
             return self._topology
 
     def set_mode(self, mode: Mode) -> "HurriCacheSmartClient":
-        self._mode_override.set(Mode(mode))
+        self._mode_override.set(None if mode is None else Mode(mode))
         return self
 
     def clear_mode(self) -> "HurriCacheSmartClient":
@@ -270,7 +273,8 @@ class HurriCacheSmartClient(Defaults):
                 hint = _hint_from_call(method_type, (None, *args), kwargs)
                 mode = self._mode_override.get()
                 if mode is None:
-                    mode = Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode
+                    write = _is_write(name) or (name == "remove" and kwargs.get("element_key") is not None)
+                    mode = Mode.MASTER_THEN_BACKUP if write else self._configured_mode
                 shard = self._shard(topology, hint)
                 master = clients.get(topology.routes.get((coordinator_pb2.MASTER, shard), ""))
                 backup = clients.get(topology.routes.get((coordinator_pb2.BACKUP, shard), ""))
@@ -389,7 +393,7 @@ class AsyncHurriCacheSmartClient(Defaults):
         return self._ready.is_set()
 
     def set_mode(self, mode: Mode) -> "AsyncHurriCacheSmartClient":
-        self._mode_override.set(Mode(mode))
+        self._mode_override.set(None if mode is None else Mode(mode))
         return self
 
     def clear_mode(self) -> "AsyncHurriCacheSmartClient":
@@ -516,7 +520,8 @@ class AsyncHurriCacheSmartClient(Defaults):
                 hint = _hint_from_call(method_type, (None, *args), kwargs)
                 mode = self._mode_override.get()
                 if mode is None:
-                    mode = Mode.MASTER_THEN_BACKUP if _is_write(name) else self._configured_mode
+                    write = _is_write(name) or (name == "remove" and kwargs.get("element_key") is not None)
+                    mode = Mode.MASTER_THEN_BACKUP if write else self._configured_mode
                 shard = self._shard(hint)
                 master = clients.get(topology.routes.get((coordinator_pb2.MASTER, shard), ""))
                 backup = clients.get(topology.routes.get((coordinator_pb2.BACKUP, shard), ""))

@@ -37,6 +37,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="fail if committed files differ")
     args = parser.parse_args()
+    SCRATCH.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             sys.executable,

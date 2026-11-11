@@ -52,10 +52,10 @@ def _cluster(master_unavailable: bool = False):
         max_shards=2,
         peerRouting=[
             coordinator_pb2.PeerRouting(
-                target=f"127.0.0.1:{master_port}", role=coordinator_pb2.MASTER, partitionIds=[0, 1]
+                target=coordinator_pb2.Endpoint(ip="127.0.0.1", port=master_port), role=coordinator_pb2.MASTER, partitionIds=[0, 1]
             ),
             coordinator_pb2.PeerRouting(
-                target=f"127.0.0.1:{backup_port}", role=coordinator_pb2.BACKUP, partitionIds=[0, 1]
+                target=coordinator_pb2.Endpoint(ip="127.0.0.1", port=backup_port), role=coordinator_pb2.BACKUP, partitionIds=[0, 1]
             ),
         ],
     )
@@ -72,10 +72,10 @@ def test_sync_smart_readiness_modes_unsigned_hint_and_cleanup() -> None:
     try:
         client.wait_until_ready(2)
         assert coordinator.calls == 1
-        assert client.get_value("key", KeyHintData(week_hash=-1)) == b"master"
+        assert client.get_value("key", KeyHintData(weak_hash=-1)) .require_bytes() == b"master"
         with client.mode(Mode.BACKUP):
-            assert client.get_value("key", KeyHintData(week_hash=0)) == b"backup"
-        assert client.get_value("key", KeyHintData(week_hash=0)) == b"master"
+            assert client.get_value("key", KeyHintData(weak_hash=0)) .require_bytes() == b"backup"
+        assert client.get_value("key", KeyHintData(weak_hash=0)) .require_bytes() == b"master"
     finally:
         client.close()
         for server in servers:
@@ -87,7 +87,7 @@ def test_sync_smart_unavailable_master_falls_back_to_backup() -> None:
     client = HurriCacheSmartClient("127.0.0.1", port, default_timeout=1, refresh_interval=60)
     try:
         client.wait_until_ready(2)
-        assert client.get_value("key", KeyHintData(week_hash=0)) == b"backup"
+        assert client.get_value("key", KeyHintData(weak_hash=0)) .require_bytes() == b"backup"
     finally:
         client.close()
         for server in servers:
@@ -100,9 +100,9 @@ async def test_async_smart_discovers_and_routes() -> None:
     try:
         await client.wait_until_ready(2)
         client.set_mode(Mode.BACKUP)
-        assert await client.get_value("key", KeyHintData(week_hash=0xFFFFFFFF)) == b"backup"
+        assert (await client.get_value("key", KeyHintData(weak_hash=0xFFFFFFFF))).require_bytes() == b"backup"
         client.clear_mode()
-        assert await client.get_value("key", KeyHintData(week_hash=1)) == b"master"
+        assert (await client.get_value("key", KeyHintData(weak_hash=1))).require_bytes() == b"master"
     finally:
         await client.close()
         for server in servers:

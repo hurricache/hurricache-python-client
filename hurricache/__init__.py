@@ -1,6 +1,6 @@
 """HurriCache Python gRPC Client."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from hurricache.grpc.async_client import AsyncHurriCacheClient
 from hurricache.grpc.client import HurriCacheClient
@@ -24,7 +24,10 @@ from hurricache.grpc.models import (
     LockType,
     Mode,
     OrderedPayload,
+    OrderedVariant,
     Payload,
+    Variant,
+    VariantType,
 )
 from hurricache.grpc.smart_client import AsyncHurriCacheSmartClient, HurriCacheSmartClient
 
@@ -51,4 +54,7 @@ __all__ = [
     "CasResult",
     "Payload",
     "OrderedPayload",
+    "Variant",
+    "VariantType",
+    "OrderedVariant",
 ]

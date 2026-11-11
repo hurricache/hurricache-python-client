@@ -7,7 +7,7 @@ from concurrent import futures
 import grpc
 import pytest
 
-from hurricache import AsyncHurriCacheClient, HurriCacheClient, LockStatus, LockType, Payload
+from hurricache import AsyncHurriCacheClient, HurriCacheClient, LockStatus, LockType, Variant
 from hurricache.grpc import cache_pb2, cache_pb2_grpc
 from hurricache.grpc.exceptions import DeadlineExceededError
 from hurricache.grpc.utils import create_value
@@ -23,7 +23,7 @@ class CacheService(cache_pb2_grpc.HurriCacheGrpcServiceServicer):
     def createKeyValue(self, request, context):
         self.created.append(request)
         self.deadlines.append(context.time_remaining())
-        return cache_pb2.KeyHintResponse(keyHint=cache_pb2.KeyHint(week_hash=4, strong_hash=8))
+        return cache_pb2.KeyHintResponse(keyHint=cache_pb2.KeyHint(weak_hash=4, strong_hash=8))
 
     def getValue(self, request, context):
         return cache_pb2.ValueResponse(value_unordered=create_value(b"x" * 2048))
@@ -44,7 +44,7 @@ class CacheService(cache_pb2_grpc.HurriCacheGrpcServiceServicer):
 
     def createContainer(self, request, context):
         self.container_batches.append(request)
-        return cache_pb2.KeyHintResponse(keyHint=cache_pb2.KeyHint(week_hash=1, strong_hash=2))
+        return cache_pb2.KeyHintResponse(keyHint=cache_pb2.KeyHint(weak_hash=1, strong_hash=2))
 
     def addElement(self, request, context):
         self.container_batches.append(request)
@@ -76,8 +76,8 @@ def test_sync_client_deadline_compression_models_and_lock_units(cache_server) ->
         assert service.created[0].value.compressionInfo.enabled
         assert service.created[0].key.payload.payload == "ключ".encode()
         assert 0 < service.deadlines[0] <= 0.5
-        assert client.get_value("key") == b"x" * 2048
-        assert client.get_container("items") == [Payload(b"a"), Payload(b"b")]
+        assert client.get_value("key") .require_bytes() == b"x" * 2048
+        assert client.get_container("items") == [Variant.of_bytes(b"a"), Variant.of_bytes(b"b")]
         assert client.lock_object("key", lock_type=LockType.WRITE_LOCK, lock_duration=1.25) is LockStatus.CANT_LOCK
         assert int(time.time()) <= service.lock_requests[0].lockDuration <= int(time.time()) + 2
         assert 0 <= client.get_ttl("key") <= 500
@@ -98,8 +98,8 @@ async def test_async_client_uses_aio_and_decodes_stream(cache_server) -> None:
     async with AsyncHurriCacheClient("127.0.0.1", port, default_timeout=0.5) as client:
         hint = await client.create_key_value("key", value=b"value")
         assert hint.week_hash == 4
-        assert await client.get_value("key") == b"x" * 2048
-        assert await client.get_container("items") == [Payload(b"a"), Payload(b"b")]
+        assert (await client.get_value("key")).require_bytes() == b"x" * 2048
+        assert await client.get_container("items") == [Variant.of_bytes(b"a"), Variant.of_bytes(b"b")]
         assert await client.lock_object("key", lock_duration=2) is LockStatus.CANT_LOCK
         with pytest.raises(DeadlineExceededError):
             await client.get_size("slow", timeout=0.001)
