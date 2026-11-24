@@ -10,6 +10,7 @@ from hurricache.grpc.batching import check
 from hurricache.grpc.exceptions import PartialOperationError, mapped_rpc_error
 from hurricache.grpc.models import KeyHintData
 from hurricache.grpc.operation import Defaults, configure, remaining
+from hurricache.grpc.client_ts import ClientSendTimeInterceptor
 from hurricache.grpc.utils import create_key, decode_batch, decode_key, grpc_target
 
 
@@ -47,18 +48,19 @@ class HurriCacheClient(Defaults):
         if self._channel is None:
             options: list[tuple[str, object]] = [("grpc.max_receive_message_length", 64 * 1024 * 1024)]
             if self._credentials is not None:
-                self._channel = grpc.secure_channel(
+                raw = grpc.secure_channel(
                     grpc_target(self._host, self._port),
                     self._credentials,
                     options=options,
                     compression=self._compression,
                 )
             else:
-                self._channel = grpc.insecure_channel(
+                raw = grpc.insecure_channel(
                     grpc_target(self._host, self._port),
                     options=options,
                     compression=self._compression,
                 )
+            self._channel = grpc.intercept_channel(raw, ClientSendTimeInterceptor())
             self._stub = cache_pb2_grpc.HurriCacheGrpcServiceStub(self._channel)
         return self._channel
 

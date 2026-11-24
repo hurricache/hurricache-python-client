@@ -11,6 +11,7 @@ from hurricache.grpc.batching import check
 from hurricache.grpc.exceptions import PartialOperationError, mapped_rpc_error
 from hurricache.grpc.models import KeyHintData
 from hurricache.grpc.operation import Defaults, configure, remaining
+from hurricache.grpc.client_ts import AsyncClientSendTimeInterceptor
 from hurricache.grpc.utils import KeyLike, create_key, decode_batch, decode_key, grpc_target
 
 
@@ -48,11 +49,15 @@ class AsyncHurriCacheClient(Defaults):
         if self._channel is None:
             target = grpc_target(self._host, self._port)
             options = [("grpc.max_receive_message_length", 64 * 1024 * 1024)]
+            interceptors = [AsyncClientSendTimeInterceptor()]
             if self._credentials is None:
-                self._channel = grpc.aio.insecure_channel(target, options=options, compression=self._compression)
+                self._channel = grpc.aio.insecure_channel(
+                    target, options=options, compression=self._compression, interceptors=interceptors
+                )
             else:
                 self._channel = grpc.aio.secure_channel(
-                    target, self._credentials, options=options, compression=self._compression
+                    target, self._credentials, options=options, compression=self._compression,
+                    interceptors=interceptors,
                 )
             self._stub = cache_pb2_grpc.HurriCacheGrpcServiceStub(self._channel)
         return self._channel

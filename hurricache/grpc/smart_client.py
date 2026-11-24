@@ -19,6 +19,7 @@ from hurricache.grpc import coordinator_pb2, coordinator_pb2_grpc
 from hurricache.grpc.api import ALIASES, WRITE_OPERATIONS
 from hurricache.grpc.async_client import AsyncHurriCacheClient
 from hurricache.grpc.client import HurriCacheClient
+from hurricache.grpc.client_ts import AsyncClientSendTimeInterceptor, ClientSendTimeInterceptor
 from hurricache.grpc.exceptions import FailedPreconditionError, UnavailableError
 from hurricache.grpc.models import KeyHintData, Mode
 from hurricache.grpc.operation import Defaults, configure, operation, remaining
@@ -179,6 +180,7 @@ class HurriCacheSmartClient(Defaults):
             channel = grpc.insecure_channel(address)
         else:
             channel = grpc.secure_channel(address, self._credentials)
+        channel = grpc.intercept_channel(channel, ClientSendTimeInterceptor())
         return channel, coordinator_pb2_grpc.CoordinatorServiceStub(channel)
 
     def _refresh_once(self) -> None:
@@ -434,9 +436,13 @@ class AsyncHurriCacheSmartClient(Defaults):
                 address = self._coordinators[self._coordinator_index % attempts]
                 self._coordinator_index += 1
                 if self._credentials is None:
-                    channel = grpc.aio.insecure_channel(address)
+                    channel = grpc.aio.insecure_channel(
+                        address, interceptors=[AsyncClientSendTimeInterceptor()]
+                    )
                 else:
-                    channel = grpc.aio.secure_channel(address, self._credentials)
+                    channel = grpc.aio.secure_channel(
+                        address, self._credentials, interceptors=[AsyncClientSendTimeInterceptor()]
+                    )
                 old_channel = self._coordinator_channel
                 self._coordinator_channel = channel
                 if old_channel is not None:
