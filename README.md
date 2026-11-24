@@ -24,6 +24,8 @@ with HurriCacheClient("127.0.0.1", 50000, default_timeout=2) as cache:
 
 `Variant.none()`, `Variant.of_bytes(b"")`, `Variant.of_long(0)`, and `Variant.of_double(0.0)` are distinct. Factories preserve numeric type. Integers must fit signed int64; bools are rejected. BYTES values are copied. Checked accessors raise `TypeError` on a different type. NaNs compare equal and signed zeros compare differently, matching Java's equality. `OrderedVariant` adds a nullable unsigned order. `Payload` and `OrderedPayload` remain byte-key models for maps.
 
+NONE is not storable: a scalar `create` with `Variant.none()` is rejected with `InvalidArgumentError`, and container creation drops NONE elements (partial insert — the remaining elements are stored and positions shift). Server-side set membership is type-sensitive: `of_long(0)` and `of_double(0.0)` are different entries, all NaN payloads merge into one, and signed zeros stay distinct.
+
 ```python
 from hurricache import HurriCacheClient, OrderedVariant, Payload, Variant
 
@@ -74,11 +76,13 @@ with HurriCacheSmartClient(["coordinator:50051"], mode=Mode.MASTER_THEN_BACKUP) 
 
 `AsyncHurriCacheSmartClient` provides the async equivalent. Smart clients consume current coordinator `Endpoint` messages, bracket IPv6 targets, and follow pinned Java routing. `set_mode`, `clear_mode`/`set_mode(None)`, and `with cache.mode(Mode.BACKUP):` provide caller-local overrides.
 
+In a cluster a create is accepted by any node and relayed to the owning master; the returned hint then carries `was_relayed=True`. Such a create is fire-and-forget: validation errors surface only when the receiving node owns the partition, and the key becomes visible on the owner asynchronously (typically within ~100 ms). After a relayed create, poll for visibility (for example with `get_size` and the returned hint) before dependent operations. Smart clients follow the server's `x-fastcache-route` reroute trailer automatically; chunked container creations re-route their continuation chunks through the returned hint and wait for visibility.
+
 Keys accept bytes or UTF-8 strings. Hints use `weak_hash`, `strong_hash`, and `was_relayed`; `week_hash` remains an alias. Equality and hashing use only the hashes. `client_id=None` selects the configured ID. Explicit zero also selects it by default; set `zero_client_id_uses_default=False` to send zero unchanged. Current Java field presence carries ownership in keys and lock requests.
 
 TTL arguments use milliseconds; timeouts and lock durations use seconds. `ttl=None` uses the configured default and `ttl=0` omits creation expiration. `set_ttl(..., ttl=-1)` removes expiration. Locks encode absolute Unix seconds, following Java's implementation.
 
-GZIP is the default payload codec. Optional `payload_compression="lz4"` uses raw blocks. Readers must select the writer's codec: the protocol has no codec identifier. Byte values and eligible keys compress only above the threshold; numeric values bypass compression. `compression=grpc.Compression.Gzip` independently controls transport compression.
+GZIP is the default payload codec. Optional `payload_compression="lz4"` uses raw blocks. Readers must select the writer's codec: the protocol has no codec identifier. **The current server supports GZIP only** — LZ4 is a client-side codec verified by offline fixtures, do not enable it against a server. Byte values and eligible keys compress only above the threshold; numeric values bypass compression. `compression=grpc.Compression.Gzip` independently controls transport compression.
 
 Container creation and additions preflight serialized requests, preserve pairs/hints, and use one creation expiration. Head chunks are sent in input order because the server reverses each request; the result matches one request across chunk boundaries. Pivot insertions advance the anchor after each chunk, with space reserved for that full anchor during preflight. Mutation counts aggregate server counts. Streams return Python lists/dicts. Failures after progress raise `PartialOperationError` and are never replayed by smart clients. Inbound messages and individual decoded payloads are limited to 64 MiB.
 
@@ -115,15 +119,15 @@ python -m tools.verify_wheel
 python -m tools.java_interop ../hurricache-java-client --java-home "C:/Program Files/Java/jdk-17.0.3.1"
 ```
 
-Live tests require `HURRICACHE_TEST_TARGET=host:port`. Pull `alexaborisov/fastcache-standalone-noavx512:latest` at live-validation start, record its digest, and use that immutable image throughout. Successful startup is required before live tests. Offline fixtures cannot complete standalone acceptance. Live cluster, real-cluster failover, and replication acceptance remain deferred. Replication stubs are provided without an application-level API. Active `Jedis`/`JedisPool` wrappers preserve shared-client lifecycle; commented Java Redis commands are outside scope.
+Live tests require `HURRICACHE_TEST_TARGET=host:port` pointing to a started standalone server with verified gRPC readiness. The live matrix uses GZIP, the only codec the server supports. Smart client forms use deterministic in-process discovery by default; set `HURRICACHE_TEST_SMART=host:port,...` (a comma-separated coordinator list) to run them against a real cluster — direct client forms skip in that mode because they are not cluster-aware. Offline fixtures cannot complete standalone acceptance. Replication stubs are provided without an application-level API. Active `Jedis`/`JedisPool` wrappers preserve shared-client lifecycle; commented Java Redis commands are outside scope.
 
-## November 11 alignment
+## November 24 alignment
 
 Container compare-and-set is included for map fields and ordered-map fields selected
 by exact key and order. It uses write routing and leaves element TTL absent, matching
 current Java. See API_REFERENCE.md for selectors and results.
 
 Full queue-content getters are legacy conveniences unsupported by the server;
-use queue size, peek and pop operations. The latest published server starts, but
-full typed/LZ4 live acceptance still has server-side failures reproduced with Java.
-See FINDINGS.md for current validation; earlier startup failures are historical.
+use queue size, peek and pop operations. The current source-built server passes the
+complete Python suite in direct and smart modes, against standalone and a live
+coordinator cluster. See FINDINGS.md for current validation.

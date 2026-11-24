@@ -6,6 +6,7 @@ The async driver awaits grpc.aio directly; recipes never perform I/O themselves.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 import warnings
@@ -16,7 +17,7 @@ from typing import Any, no_type_check
 
 from hurricache.grpc import cache_pb2 as pb
 from hurricache.grpc.batching import check, continuation, plan
-from hurricache.grpc.exceptions import HurriCacheError, PartialOperationError
+from hurricache.grpc.exceptions import HurriCacheError, KeyNotFoundError, PartialOperationError
 from hurricache.grpc.models import (
     KeyHintData,
     LockStatus,
@@ -597,12 +598,26 @@ def install(cls, *, asynchronous=False):
                 steps = recipe(call)
                 try:
                     step = next(steps)
+                    create_weak_hash = None
+                    retry_deadline = 0.0
                     while True:
                         try:
-                            response = await self._unary(name, getattr(self.stub, step.rpc), step.request, **kwargs)
+                            stub = self.stub
+                            router = getattr(self, "_continuation_router", None)
+                            if create_weak_hash is not None and router is not None:
+                                stub = (router(create_weak_hash) or self).stub
+                            response = await self._unary(name, getattr(stub, step.rpc), step.request, **kwargs)
                         except Exception as error:
+                            # Clustered create continuation: the key may still be in flight to the owner
+                            if (create_weak_hash is not None and isinstance(error, KeyNotFoundError)
+                                    and time.monotonic() < retry_deadline):
+                                await asyncio.sleep(0.05)
+                                continue
                             step = steps.throw(error)
                         else:
+                            if step.rpc == "createContainer" and response.HasField("keyHint"):
+                                create_weak_hash = response.keyHint.weak_hash
+                                retry_deadline = time.monotonic() + 2
                             step = steps.send(response)
                 except StopIteration as result:
                     return result.value
@@ -620,12 +635,26 @@ def install(cls, *, asynchronous=False):
                 steps = recipe(call)
                 try:
                     step = next(steps)
+                    create_weak_hash = None
+                    retry_deadline = 0.0
                     while True:
                         try:
-                            response = self._call(name, getattr(self.stub, step.rpc), step.request, **kwargs)
+                            stub = self.stub
+                            router = getattr(self, "_continuation_router", None)
+                            if create_weak_hash is not None and router is not None:
+                                stub = (router(create_weak_hash) or self).stub
+                            response = self._call(name, getattr(stub, step.rpc), step.request, **kwargs)
                         except Exception as error:
+                            # Clustered create continuation: the key may still be in flight to the owner
+                            if (create_weak_hash is not None and isinstance(error, KeyNotFoundError)
+                                    and time.monotonic() < retry_deadline):
+                                time.sleep(0.05)
+                                continue
                             step = steps.throw(error)
                         else:
+                            if step.rpc == "createContainer" and response.HasField("keyHint"):
+                                create_weak_hash = response.keyHint.weak_hash
+                                retry_deadline = time.monotonic() + 2
                             step = steps.send(response)
                 except StopIteration as result:
                     return result.value

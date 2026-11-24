@@ -1,6 +1,56 @@
 # Java parity validation findings
 
-## Current alignment check - November 11, 2026
+## Current alignment check - November 24, 2026
+
+The server is now built from the current source tree (no published image pin) and
+includes the fixes for the November 11 typed-value failures. The full Python suite
+passes live in these configurations:
+
+| Configuration | Result |
+| --- | --- |
+| Deterministic suite (no server) | **1392 passed**; skips are live opt-ins and direct-client instances of smart-only routing tests |
+| Standalone (`HURRICACHE_TEST_TARGET`), all four client forms (sync/async/smart/async-smart), GZIP | **240 passed** (test_integration.py + test_live_parity.py) |
+| Live 3-node cluster with real coordinators (`HURRICACHE_TEST_SMART=host:port,...`) | **120 passed, 120 skipped** (direct forms skip; not cluster-aware), repeated runs stable |
+
+The Go client passes the same standalone and live-cluster gates.
+
+### Server contract clarifications adopted by the clients
+
+- NONE is not storable. A scalar create with NONE is rejected with
+  INVALID_ARGUMENT (`InvalidArgumentError`). Container creation drops NONE
+  elements (partial insert): the remaining elements are stored and positions
+  after a dropped element shift.
+- Set equality is type-sensitive: `of_long(0)` and `of_double(0.0)` are distinct
+  entries, all NaN payloads merge into one entry, and signed double zeros stay
+  distinct.
+- The server supports GZIP payload compression only. Raw LZ4 remains a
+  client-side codec verified by offline fixtures; it is excluded from live runs.
+- In a cluster a create is accepted by any node and relayed to the owning
+  master. A relayed create is fire-and-forget: the response is OK with
+  `was_relayed=True`, validation happens on the owner, and the key becomes
+  visible asynchronously (measured at ~50-100 ms). Clients and tests must poll
+  for visibility before dependent operations.
+
+### Client fixes in this round
+
+- Smart reroute: the server places the `master[,backup]` route as one
+  comma-joined string in the `x-fastcache-route` trailer (and in the status
+  description). The smart clients now split it and try each target; previously
+  the whole string was looked up as a single endpoint and never matched.
+- Chunked container creation: continuation chunks are re-routed through the hint
+  returned by the first chunk (matching Java's `createContainerWithChunks` with
+  its replication delay), via a continuation-router hook the smart clients
+  install on their endpoint clients. NotFound continuations are retried with
+  backoff until the relayed/replicated create lands on the owner. Previously
+  every chunk went to the first chunk's endpoint, which fails whenever chunk 1
+  was relayed or accepted by a backup.
+- Server-side: full-width (uint64) weighted lookup/removal in ordered
+  containers was truncated to 32 bits in three handlers; fixed, so the maximum
+  uint64 weight works.
+
+## Historical evidence before November 24
+
+## Historical alignment check - November 11, 2026
 
 Python and Go 0.2.0 now match current Java `0a2b1d851405744e9390bcf5b5e8592177b121e4`:
 **742 interface declarations, 319 concrete wrapper declarations, 68 typed-model

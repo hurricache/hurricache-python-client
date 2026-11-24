@@ -51,6 +51,8 @@ Full queue-content reads (get_queue/stream_queue) are legacy conveniences unsupp
 server contract. Use get_size, peek_head/peek_tail, and pop_head/pop_tail for queues.
 
 Variant factories: none(), of_bytes(bytes), of_long(int)/of_int(int), of_double(float).
+NONE is not storable: scalar creation is rejected (InvalidArgumentError), and container
+creation drops NONE elements (partial insert).
 Properties: type (VariantType.NONE/BYTES/INT/DOUBLE), value, is_none/is_bytes/is_int/is_double.
 Checked accessors: require_bytes(), require_long()/require_int(), require_double(), number_value().
 bytes_value/long_value/int_value/double_value are checked properties. Equality is type-sensitive;
@@ -63,6 +65,8 @@ represent byte map keys. A nullable ordered-key order decodes as None.
 
 KeyHintData(weak_hash=None, strong_hash=None, was_relayed=False) retains week_hash as a constructor/property alias.
 Equality/hash compare only hashes; is_specified and bool indicate hash presence. Creation propagates relay metadata.
+A relayed creation (was_relayed=True) is acknowledged at the entry node and lands on the owner asynchronously —
+visible within ~100 ms; only tests that assert immediately should wait or poll.
 LockType: NO_LOCK, WRITE_LOCK, READ_LOCK, GLOBAL. LockStatus: OK, CANT_LOCK, CANT_UNLOCK, GENERIC_ERROR.
 ContainerType: UNDEFINED, VECTOR, LIST, QUEUE, SET, MAP, ORDERED_MAP, ORDERED_SET.
 Mode: MASTER, BACKUP, MASTER_THEN_BACKUP (MASTER_THAN_BACKUP alias), LB_SMART.

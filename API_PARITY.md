@@ -10,7 +10,7 @@ Replication messages/stubs remain; Java has no application-level replication cli
 
 Timeout/lock Duration arguments use Python seconds; TTL Duration arguments use milliseconds. Missing hint=None,
 client_id=None→configured ID, timeout→default_timeout and ttl=None→default_ttl retain Python defaults.
-Explicit zero selects the default ID unless zero_client_id_uses_default=False. Codec selection is explicit: gzip (default) or optional lz4.
+Explicit zero selects the default ID unless zero_client_id_uses_default=False. Codec selection is explicit: gzip (default) or optional lz4. The current server supports gzip only; lz4 is verified offline.
 Each signature records Python defaults. Overloads collapse into named arguments; str keys encode as UTF-8.
 Current operations return typed values and integer counts. Only unambiguous deprecated aliases remain; see README.md.
 Request/result assertions cover values, collections, atomics/CAS, TTL, owners, ordering, deadlines, cancellation, routing and replay

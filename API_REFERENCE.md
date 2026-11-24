@@ -40,6 +40,8 @@ Full queue-content reads (get_queue/stream_queue) are legacy conveniences unsupp
 server contract. Use get_size, peek_head/peek_tail, and pop_head/pop_tail for queues.
 
 Variant factories: none(), of_bytes(bytes), of_long(int)/of_int(int), of_double(float).
+NONE is not storable: scalar creation is rejected (InvalidArgumentError), and container
+creation drops NONE elements (partial insert).
 Properties: type (VariantType.NONE/BYTES/INT/DOUBLE), value, is_none/is_bytes/is_int/is_double.
 Checked accessors: require_bytes(), require_long()/require_int(), require_double(), number_value().
 bytes_value/long_value/int_value/double_value are checked properties. Equality is type-sensitive;

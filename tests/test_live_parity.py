@@ -5,13 +5,16 @@ import os
 import time
 
 import pytest
+from test_integration import live_client, wait_visible
 from test_parity import invoke
 
 from hurricache import LockStatus, LockType, OrderedPayload, OrderedVariant, Variant
 from hurricache.grpc import batching
 
 pytestmark = pytest.mark.skipif(not os.environ.get("HURRICACHE_TEST_TARGET"), reason="requires pinned standalone startup")
-pytest_plugins = ["test_integration"]
+# live_client is imported directly: pytest_plugins from a test module does not
+# register fixtures when collected together with test_integration.
+_ = live_client
 
 
 @pytest.mark.parametrize("family", ["list", "vector", "queue", "set", "ordered_set", "map", "ordered_map"])
@@ -28,6 +31,7 @@ async def test_live_creation_continuations(live_client, monkeypatch, family):
     name = key()
     monkeypatch.setattr(batching, "MAX_RPC_SIZE", 250)
     hint = await invoke(client, "create_" + family, name, **options)
+    await wait_visible(client, name, hint)
     if family == "queue":
         assert await invoke(client, "get_size", name, hint) == len(values)
         assert [await invoke(client, "pop_head", name, hint) for _ in values] == values
@@ -53,6 +57,7 @@ async def test_live_chunked_insertion_order(live_client, monkeypatch, operation)
         monkeypatch.setattr(batching, "MAX_RPC_SIZE", budget)
         name = key()
         hint = await invoke(client, "create_list", name, values=[b"pivot"])
+        await wait_visible(client, name, hint)
         options = {"values": values}
         if operation in ("insert_before", "insert_after"):
             options["pivot"] = b"pivot"
@@ -67,6 +72,7 @@ async def test_live_lock_expiration_and_ttl(live_client):
     client, key = live_client
     name = key()
     hint = await invoke(client, "create", name, value=1, ttl=10000)
+    await wait_visible(client, name, hint)
     assert 0 < await invoke(client, "get_ttl", name, hint) <= 10000
     assert await invoke(client, "set_ttl", name, hint, ttl=-1)
     assert await invoke(client, "get_ttl", name, hint) == -1

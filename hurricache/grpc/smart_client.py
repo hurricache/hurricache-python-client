@@ -88,6 +88,22 @@ def _merge_topology(responses):
     return _topology_from(merged)
 
 
+def _route_for_hash(clients: dict, topology: _Topology, weak_hash: int):
+    # Shard master client for create continuation chunks (None when topology is not ready).
+    if topology.max_shards <= 0:
+        return None
+    target = topology.routes.get((coordinator_pb2.MASTER, weak_hash % topology.max_shards))
+    return clients.get(target)
+
+
+def _reroute_target(error: FailedPreconditionError, clients: dict, endpoint):
+    # The server puts the "master[,backup]" route as one string into the trailer (or the status description).
+    route = error.route or str(error)
+    for target in route.split(","):
+        candidate = clients.get(target.strip())
+        if candidate is not None and candidate is not endpoint:
+            return candidate
+    return None
 def _hint_from_call(method: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> KeyHintData | None:
     try:
         bound = inspect.signature(method).bind_partial(*args, **kwargs)
@@ -223,7 +239,7 @@ class HurriCacheSmartClient(Defaults):
             for target in topology.targets:
                 if target not in self._clients:
                     host, port = _split_target(target)
-                    self._clients[target] = HurriCacheClient(
+                    endpoint = HurriCacheClient(
                         host,
                         port,
                         default_client_id=self._default_client_id,
@@ -235,6 +251,8 @@ class HurriCacheSmartClient(Defaults):
                         credentials=self._credentials,
                         compression=getattr(self, "_compression", None),
                     )
+                    endpoint._continuation_router = lambda h: _route_for_hash(self._clients, self._topology, h)
+                    self._clients[target] = endpoint
             self._topology = topology
             self._ready.set()
 
@@ -296,8 +314,8 @@ class HurriCacheSmartClient(Defaults):
                 try:
                     return getattr(endpoint, name)(*args, **kwargs)
                 except FailedPreconditionError as error:
-                    other = clients.get(error.route)
-                    if other is None or other is endpoint:
+                    other = _reroute_target(error, clients, endpoint)
+                    if other is None:
                         raise
                 except UnavailableError:
                     if len(endpoints) < 2:
@@ -476,7 +494,7 @@ class AsyncHurriCacheSmartClient(Defaults):
         for target in topology.targets:
             if target not in self._clients:
                 host, port = _split_target(target)
-                self._clients[target] = AsyncHurriCacheClient(
+                endpoint = AsyncHurriCacheClient(
                     host,
                     port,
                     default_client_id=self._default_client_id,
@@ -488,6 +506,8 @@ class AsyncHurriCacheSmartClient(Defaults):
                     credentials=self._credentials,
                     compression=getattr(self, "_compression", None),
                 )
+                endpoint._continuation_router = lambda h: _route_for_hash(self._clients, self._topology, h)
+                self._clients[target] = endpoint
         self._topology = topology
         self._ready.set()
 
@@ -547,8 +567,8 @@ class AsyncHurriCacheSmartClient(Defaults):
                 try:
                     return await getattr(endpoint, name)(*args, **kwargs)
                 except FailedPreconditionError as error:
-                    other = clients.get(error.route)
-                    if other is None or other is endpoint:
+                    other = _reroute_target(error, clients, endpoint)
+                    if other is None:
                         raise
                 except UnavailableError:
                     if len(endpoints) < 2:

@@ -1,7 +1,9 @@
 """Current-protocol standalone acceptance; requires an explicitly supplied server."""
 
+import asyncio
 import inspect
 import os
+import time
 import uuid
 
 import grpc
@@ -13,6 +15,7 @@ from hurricache import (
     AsyncHurriCacheClient,
     AsyncHurriCacheSmartClient,
     HurriCacheClient,
+    HurriCacheError,
     HurriCacheRpcError,
     HurriCacheSmartClient,
     KeyNotFoundError,
@@ -25,7 +28,8 @@ from hurricache.grpc import coordinator_pb2 as cp
 from hurricache.grpc import coordinator_pb2_grpc as cpg
 
 TARGET = os.environ.get("HURRICACHE_TEST_TARGET")
-CODECS = os.environ.get("HURRICACHE_TEST_CODECS", "gzip,lz4").split(",")
+# The server supports gzip only; lz4 is a local codec, not exercised live.
+CODECS = os.environ.get("HURRICACHE_TEST_CODECS", "gzip").split(",")
 pytestmark = pytest.mark.skipif(not TARGET, reason="set HURRICACHE_TEST_TARGET after pinned standalone startup")
 
 
@@ -36,15 +40,24 @@ async def live_client(request):
     if codec == "lz4":
         pytest.importorskip("lz4.block")
     host, port = TARGET.rsplit(":", 1)
+    real = os.environ.get("HURRICACHE_TEST_SMART")
+    if real and real != "1" and "smart" not in form:
+        pytest.skip("direct clients are not cluster-aware; smart forms only against a real cluster")
     options = dict(default_timeout=10, payload_compression=codec,
                    default_client_id=77, zero_client_id_uses_default=False)
     coordinator_server = None
     if "smart" in form:
-        coordinator = Coordinator(cp.RoutingInfoData(max_shards=1, peerRouting=[cp.PeerRouting(
-            target=cp.Endpoint(ip=host.strip("[]"), port=int(port)), role=cp.MASTER, partitionIds=[0])]))
-        coordinator_server, coordinator_port = _server(coordinator, cpg.add_CoordinatorServiceServicer_to_server)
-        client = (AsyncHurriCacheSmartClient if form == "async-smart" else HurriCacheSmartClient)(
-            "127.0.0.1", coordinator_port, refresh_interval=60, **options)
+        # Real cluster: HURRICACHE_TEST_SMART="host:port,host:port,..."
+        real = os.environ.get("HURRICACHE_TEST_SMART")
+        if real and real != "1":
+            client = (AsyncHurriCacheSmartClient if form == "async-smart" else HurriCacheSmartClient)(
+                real.split(","), refresh_interval=60, **options)
+        else:
+            coordinator = Coordinator(cp.RoutingInfoData(max_shards=1, peerRouting=[cp.PeerRouting(
+                target=cp.Endpoint(ip=host.strip("[]"), port=int(port)), role=cp.MASTER, partitionIds=[0])]))
+            coordinator_server, coordinator_port = _server(coordinator, cpg.add_CoordinatorServiceServicer_to_server)
+            client = (AsyncHurriCacheSmartClient if form == "async-smart" else HurriCacheSmartClient)(
+                "127.0.0.1", coordinator_port, refresh_interval=60, **options)
     else:
         client = (AsyncHurriCacheClient if form == "async" else HurriCacheClient)(host.strip("[]"), int(port), **options)
     keys = []
@@ -53,9 +66,10 @@ async def live_client(request):
         keys.append(value)
         return value
     try:
-        if coordinator_server is not None:
+        if "smart" in form:
             await invoke(client, "wait_until_ready", 10)
-            assert coordinator.calls >= 1
+            if coordinator_server is not None:
+                assert coordinator.calls >= 1
         yield client, key
     finally:
         try:
@@ -74,6 +88,19 @@ async def live_client(request):
                     coordinator_server.stop(0).wait()
 
 
+async def wait_visible(client, name, hint):
+    """In a cluster a create may become visible asynchronously (relay, replication) — poll up to 2s."""
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            await invoke(client, "get_size", name, hint)
+            return
+        except KeyNotFoundError:
+            if time.monotonic() > deadline:
+                raise
+            await asyncio.sleep(0.05)
+
+
 @pytest.mark.parametrize("value", [Variant.none(), Variant.of_bytes(b""), Variant.of_long(0),
                                     Variant.of_double(0.0), Variant.of_double(-0.0), Variant.of_long(-(1 << 63)),
                                     Variant.of_long((1 << 63)-1), Variant.of_double(1.25),
@@ -83,7 +110,18 @@ async def live_client(request):
 async def test_live_typed_scalars(live_client, value):
     client, key = live_client
     name = key()
+    if value.is_none:
+        # None is not a storable type — the server rejects it; a clustered
+        # relay (fire-and-forget) may return OK with was_relayed.
+        try:
+            hint = await invoke(client, "create", name, value=value, client_id=0)
+            await wait_visible(client, name, hint)
+        except HurriCacheError:
+            return
+        assert hint is not None and hint.was_relayed
+        return
     hint = await invoke(client, "create", name, value=value, client_id=0)
+    await wait_visible(client, name, hint)
     assert await invoke(client, "get", name, hint, client_id=0) == value
     assert await invoke(client, "replace", name, hint, value=17, client_id=0) == value
     assert await invoke(client, "pop", name, hint, client_id=0) == Variant.of_long(17)
@@ -105,22 +143,26 @@ async def test_live_mixed_collections(live_client, family, include_none):
         options["keys"] = [OrderedPayload(str(i).encode(), i+1) if family == "ordered_map" else Payload(str(i).encode())
                            for i in range(len(values))]
     hint = await invoke(client, "create_" + family, name, **options)
+    await wait_visible(client, name, hint)
+    # None is dropped by the server on insert (partial insert)
+    stored = [v for v in values if not v.is_none]
     if family == "queue":
         # Full queue reads are intentionally unsupported; cardinality/pop remain valid.
         with pytest.raises(HurriCacheRpcError):
             await invoke(client, "get_queue", name, hint)
-        assert await invoke(client, "get_size", name, hint) == len(values)
-        assert [await invoke(client, "pop_head", name, hint) for _ in values] == values
+        assert await invoke(client, "get_size", name, hint) == len(stored)
+        assert [await invoke(client, "pop_head", name, hint) for _ in stored] == stored
         return
     actual = await invoke(client, "get_" + family, name, hint)
     if family in ("map", "ordered_map"):
-        assert actual == dict(zip(options["keys"], values))
+        expected = {k: v for k, v in zip(options["keys"], values) if not v.is_none}
+        assert actual == expected
     elif family == "ordered_set":
-        assert actual == options["values"]
+        assert actual == [ov for ov in options["values"] if not ov.is_none]
     elif family == "set":
-        assert set(actual) == set(values)
+        assert set(actual) == set(stored)
     else:
-        assert actual == values
+        assert actual == stored
 
 
 async def test_live_numeric_atomics_and_container_selectors(live_client):
@@ -128,6 +170,7 @@ async def test_live_numeric_atomics_and_container_selectors(live_client):
     for initial in (10, 10.5):
         name = key()
         hint = await invoke(client, "create", name, value=initial)
+        await wait_visible(client, name, hint)
         assert await invoke(client, "exchange", name, hint, value=initial) == initial
         await invoke(client, "add", name, hint, delta=2)
         assert (await invoke(client, "get", name, hint)).number_value() == initial + 2
@@ -141,6 +184,7 @@ async def test_live_numeric_atomics_and_container_selectors(live_client):
         if family == "map":
             kwargs["keys"] = [b"entry"]
         hint = await invoke(client, "create_" + family, name, **kwargs)
+        await wait_visible(client, name, hint)
         assert await invoke(client, "exchange_in_container", name, hint, selector=selector, value=20) == 10
         await invoke(client, "add_in_container", name, hint, selector=selector, delta=5)
         result = await invoke(client, "get_in_container", name, hint, element_key=b"entry") if family == "map" else await invoke(client, "get_at", name, hint, pos=0)
@@ -156,6 +200,7 @@ async def test_live_container_cas(live_client, ordered, initial, new):
     selector = OrderedPayload(field, 10) if ordered else field
     hint = await invoke(client, "create_ordered_map" if ordered else "create_map", name,
                         keys=[selector], values=[initial])
+    await wait_visible(client, name, hint)
     result = await invoke(client, "compare_and_set_in_container", name, hint,
                           selector=selector, expected_value=initial, new_value=new)
     assert result.success and result.expected_value is None
@@ -180,19 +225,23 @@ async def test_live_set_type_sensitive_equality(live_client):
               Variant.of_double(-0.0), Variant.of_double(float("nan")), Variant.of_double(float("nan")),
               Variant.of_long(1), Variant.of_long(0x100000001)]
     hint = await invoke(client, "create_set", name, values=values)
+    await wait_visible(client, name, hint)
     actual = await invoke(client, "get_set", name, hint)
-    assert len(actual) == len(set(values))
-    assert set(actual) == set(values)
+    # None is dropped by the server; NaNs merge (type-sensitive equality, signed zeros differ)
+    want = {v for v in values if not v.is_none}
+    assert len(actual) == len(want)
+    assert set(actual) == want
 
 
-@pytest.mark.parametrize("value", [Variant.none(), Variant.of_bytes(b""), Variant.of_double(-0.0),
-                                    Variant.of_bytes(b"weighted" * 1024)], ids=["none", "empty", "double", "compressed"])
+@pytest.mark.parametrize("value", [Variant.of_bytes(b""), Variant.of_double(-0.0),
+                                    Variant.of_bytes(b"weighted" * 1024)], ids=["empty", "double", "compressed"])
 @pytest.mark.parametrize("weight", [2, (1 << 64)-1])
 async def test_live_weighted_scalar_contract(live_client, value, weight):
     client, key = live_client
     name = key()
     other = 3 if weight == 2 else 1
     hint = await invoke(client, "create_ordered_set", name, values=[OrderedVariant.of(value, weight), OrderedVariant.of_int(9, other)])
+    await wait_visible(client, name, hint)
     for method in ("get_element_with_weight", "get_and_remove_element_with_weight"):
         actual = await invoke(client, method, name, hint, pos=weight)
         assert type(actual) is Variant and actual == value
@@ -206,10 +255,13 @@ async def test_live_positional_reads_and_pops(live_client, family):
     values = [Variant.none(), Variant.of_bytes(b""), Variant.of_long(0), Variant.of_double(-0.0),
               Variant.of_bytes(b"position" * 1024)]
     hint = await invoke(client, "create_" + family, name, values=values)
-    assert await invoke(client, "get_at", name, hint, pos=3) == values[3]
-    assert await invoke(client, "pop_at", name, hint, pos=1) == values[1]
-    assert await invoke(client, "remove_at", name, hint, pos=1) == 1
-    assert await invoke(client, "get_" + family, name, hint) == [values[0], *values[3:]]
+    await wait_visible(client, name, hint)
+    # None is dropped by the server on create (partial insert): positions shift
+    stored = values[1:]
+    assert await invoke(client, "get_at", name, hint, pos=2) == stored[2]
+    assert await invoke(client, "pop_at", name, hint, pos=0) == stored[0]
+    assert await invoke(client, "remove_at", name, hint, pos=0) == 1
+    assert await invoke(client, "get_" + family, name, hint) == stored[2:]
 
 
 @pytest.mark.parametrize("family", ["list", "vector", "ordered_set", "ordered_map"])
@@ -222,6 +274,7 @@ async def test_live_destructive_ranges(live_client, family):
     if family == "ordered_map":
         options["keys"] = [OrderedPayload(bytes([i]), i+1) for i in range(4)]
     hint = await invoke(client, "create_" + family, name, **options)
+    await wait_visible(client, name, hint)
     method = "get_and_delete_element_in_range_" + family if family.startswith("ordered") else "get_and_delete_" + family + "_elements_in_range"
     before = await invoke(client, "get_size", name, hint)
     extracted = await invoke(client, method, name, hint, pos=1, end=2)
@@ -245,12 +298,14 @@ async def test_live_compressed_key_and_map_update(live_client):
     name = key() + "/" + "x" * 2048
     # Register the expanded key for cleanup.
     hint = await invoke(client, "create", name, value=b"x" * 4096)
+    await wait_visible(client, name, hint)
     try:
         assert await invoke(client, "get", name, hint) == Variant.of_bytes(b"x" * 4096)
     finally:
         await invoke(client, "remove", name, hint)
     name = key()
     hint = await invoke(client, "create_map", name, keys=[b"entry"], values=[1.5])
+    await wait_visible(client, name, hint)
     assert await invoke(client, "update", name, hint, element_key=b"entry", value=2) == Variant.of_double(1.5)
     assert await invoke(client, "pop_in_container", name, hint, element_key=b"entry") == Variant.of_long(2)
 
@@ -264,6 +319,7 @@ async def test_live_order_updates_exact_matching_and_bounds(live_client, family)
     if family == "ordered_set":
         options = {"values": [OrderedVariant.of_bytes(member, 10), OrderedVariant.of_bytes(member, 20)]}
     hint = await invoke(client, "create_" + family, name, **options)
+    await wait_visible(client, name, hint)
     before = await invoke(client, "get_" + family, name, hint)
     with pytest.raises(KeyNotFoundError):
         await invoke(client, "increment_order", name, hint, OrderedPayload(member, 999), 1)

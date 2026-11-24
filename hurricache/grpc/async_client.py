@@ -43,6 +43,8 @@ class AsyncHurriCacheClient(Defaults):
         self._compression = compression
         self._channel: grpc.aio.Channel | None = None
         self._stub: cache_pb2_grpc.HurriCacheGrpcServiceStub | None = None
+        # Smart client hook: weak_hash -> shard master client (for create continuation chunks).
+        self._continuation_router = None
 
     @property
     def channel(self) -> grpc.aio.Channel:
