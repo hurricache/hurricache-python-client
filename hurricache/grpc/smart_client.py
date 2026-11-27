@@ -23,6 +23,7 @@ from hurricache.grpc.client_ts import AsyncClientSendTimeInterceptor, ClientSend
 from hurricache.grpc.exceptions import FailedPreconditionError, UnavailableError
 from hurricache.grpc.models import KeyHintData, Mode
 from hurricache.grpc.operation import Defaults, configure, operation, remaining
+from hurricache.grpc.tls import TlsConfig, resolve_channel_security
 from hurricache.grpc.utils import grpc_target
 
 
@@ -136,6 +137,7 @@ class HurriCacheSmartClient(Defaults):
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
         compression: grpc.Compression | None = None,
+        tls: TlsConfig | None = None,
     ) -> None:
         configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._active = 0
@@ -146,7 +148,7 @@ class HurriCacheSmartClient(Defaults):
         self._readiness_timeout = readiness_timeout
         self._refresh_interval = refresh_interval
         self._configured_mode = Mode(mode)
-        self._credentials = credentials
+        self._credentials, self._tls_options = resolve_channel_security(credentials, tls)
         self._compression = compression
         self._mode_override: contextvars.ContextVar[Mode | None] = contextvars.ContextVar(
             f"hurricache_sync_mode_{id(self)}", default=None
@@ -195,7 +197,7 @@ class HurriCacheSmartClient(Defaults):
         if self._credentials is None:
             channel = grpc.insecure_channel(address)
         else:
-            channel = grpc.secure_channel(address, self._credentials)
+            channel = grpc.secure_channel(address, self._credentials, options=self._tls_options)
         channel = grpc.intercept_channel(channel, ClientSendTimeInterceptor())
         return channel, coordinator_pb2_grpc.CoordinatorServiceStub(channel)
 
@@ -251,6 +253,7 @@ class HurriCacheSmartClient(Defaults):
                         credentials=self._credentials,
                         compression=getattr(self, "_compression", None),
                     )
+                    endpoint._tls_options = self._tls_options
                     endpoint._continuation_router = lambda h: _route_for_hash(self._clients, self._topology, h)
                     self._clients[target] = endpoint
             self._topology = topology
@@ -384,6 +387,7 @@ class AsyncHurriCacheSmartClient(Defaults):
         mode: Mode = Mode.MASTER_THEN_BACKUP,
         credentials: grpc.ChannelCredentials | None = None,
         compression: grpc.Compression | None = None,
+        tls: TlsConfig | None = None,
     ) -> None:
         configure(self, default_ttl, default_compression_threshold, payload_compression, zero_client_id_uses_default)
         self._active = 0
@@ -394,7 +398,7 @@ class AsyncHurriCacheSmartClient(Defaults):
         self._readiness_timeout = readiness_timeout
         self._refresh_interval = refresh_interval
         self._configured_mode = Mode(mode)
-        self._credentials = credentials
+        self._credentials, self._tls_options = resolve_channel_security(credentials, tls)
         self._compression = compression
         self._mode_override: contextvars.ContextVar[Mode | None] = contextvars.ContextVar(
             f"hurricache_async_mode_{id(self)}", default=None
@@ -459,7 +463,8 @@ class AsyncHurriCacheSmartClient(Defaults):
                     )
                 else:
                     channel = grpc.aio.secure_channel(
-                        address, self._credentials, interceptors=[AsyncClientSendTimeInterceptor()]
+                        address, self._credentials, options=self._tls_options,
+                        interceptors=[AsyncClientSendTimeInterceptor()]
                     )
                 old_channel = self._coordinator_channel
                 self._coordinator_channel = channel
@@ -506,6 +511,7 @@ class AsyncHurriCacheSmartClient(Defaults):
                     credentials=self._credentials,
                     compression=getattr(self, "_compression", None),
                 )
+                endpoint._tls_options = self._tls_options
                 endpoint._continuation_router = lambda h: _route_for_hash(self._clients, self._topology, h)
                 self._clients[target] = endpoint
         self._topology = topology

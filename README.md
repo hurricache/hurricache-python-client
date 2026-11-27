@@ -131,3 +131,28 @@ Full queue-content getters are legacy conveniences unsupported by the server;
 use queue size, peek and pop operations. The current source-built server passes the
 complete Python suite in direct and smart modes, against standalone and a live
 coordinator cluster. See FINDINGS.md for current validation.
+
+## TLS
+
+`hurricache.TlsConfig` builds secure channels from PEM files with the same semantics as the server-side `tls` section:
+
+```python
+from hurricache import HurriCacheClient, TlsConfig
+
+tls = TlsConfig(
+    ca_file="/etc/hurricache/tls/ca.pem",        # verify server against this CA (required)
+    cert_file="/etc/hurricache/tls/client-cert.pem",  # client certificate for mTLS
+    key_file="/etc/hurricache/tls/client-key.pem",
+    server_name="grpc.hurricache",               # optional: expected certificate name
+)
+client = HurriCacheClient("192.168.0.123", 50000, tls=tls)
+```
+
+Rules (mirroring the server):
+
+- `tls=None` (or omitted) — plaintext, as before. `credentials=` and `tls=` are mutually exclusive.
+- `ca_file` — required for TLS: grpc-python cannot do "encryption without verification". For a self-signed server certificate pass the certificate itself as `ca_file`.
+- Hostname (CN/SAN) is not verified unless `server_name` is set (it overrides the verified name and SNI). For certificates whose CN does not match the host, pass `server_name`.
+- `cert_file`+`key_file` — client certificate for mTLS (mandatory when the server has `ca` configured); they must be set together.
+
+`tls=` is accepted by `HurriCacheClient`, `AsyncHurriCacheClient` and both smart clients (sync and async); smart clients apply it to the coordinator channels and propagate it to shard endpoint clients.

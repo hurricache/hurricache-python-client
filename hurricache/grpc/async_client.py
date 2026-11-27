@@ -12,6 +12,7 @@ from hurricache.grpc.exceptions import PartialOperationError, mapped_rpc_error
 from hurricache.grpc.models import KeyHintData
 from hurricache.grpc.operation import Defaults, configure, remaining
 from hurricache.grpc.client_ts import AsyncClientSendTimeInterceptor
+from hurricache.grpc.tls import TlsConfig, resolve_channel_security
 from hurricache.grpc.utils import KeyLike, create_key, decode_batch, decode_key, grpc_target
 
 
@@ -29,6 +30,7 @@ class AsyncHurriCacheClient(Defaults):
         credentials: grpc.ChannelCredentials | None = None,
         compression: grpc.Compression | None = None,
         *,
+        tls: TlsConfig | None = None,
         default_ttl: int = 0,
         default_compression_threshold: int = 1024,
         payload_compression: str = "gzip",
@@ -39,7 +41,7 @@ class AsyncHurriCacheClient(Defaults):
         self._port = port
         self._default_client_id = default_client_id
         self._default_timeout = default_timeout
-        self._credentials = credentials
+        self._credentials, self._tls_options = resolve_channel_security(credentials, tls)
         self._compression = compression
         self._channel: grpc.aio.Channel | None = None
         self._stub: cache_pb2_grpc.HurriCacheGrpcServiceStub | None = None
@@ -51,6 +53,7 @@ class AsyncHurriCacheClient(Defaults):
         if self._channel is None:
             target = grpc_target(self._host, self._port)
             options = [("grpc.max_receive_message_length", 64 * 1024 * 1024)]
+            options.extend(self._tls_options)
             interceptors = [AsyncClientSendTimeInterceptor()]
             if self._credentials is None:
                 self._channel = grpc.aio.insecure_channel(

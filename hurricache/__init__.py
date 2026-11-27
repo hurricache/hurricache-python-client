@@ -4,6 +4,7 @@ __version__ = "0.2.0"
 
 from hurricache.grpc.async_client import AsyncHurriCacheClient
 from hurricache.grpc.client import HurriCacheClient
+from hurricache.grpc.tls import TlsConfig
 from hurricache.grpc.exceptions import (
     CancelledError,
     DeadlineExceededError,
